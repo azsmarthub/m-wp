@@ -9,19 +9,13 @@ NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
 NGINX_MWP_SNIPPETS="/etc/nginx/mwp"
 
 # ---------------------------------------------------------------------------
-# Ensure mwp nginx dirs exist + global nginx.conf is sane
+# Guard: verify install.sh was run (sites-enabled must exist)
 # ---------------------------------------------------------------------------
-nginx_init() {
-    mkdir -p "$NGINX_SITES_AVAILABLE" "$NGINX_SITES_ENABLED" "$NGINX_MWP_SNIPPETS"
-
-    # Ensure nginx.conf includes sites-enabled
-    if ! grep -q "sites-enabled" /etc/nginx/nginx.conf 2>/dev/null; then
-        # Add include inside http block if missing
-        sed -i '/^http {/a\    include /etc/nginx/sites-enabled/*.conf;' /etc/nginx/nginx.conf
-    fi
-
-    # Remove default site if it conflicts
-    rm -f "$NGINX_SITES_ENABLED/default" 2>/dev/null || true
+nginx_check_setup() {
+    [[ -d "$NGINX_SITES_AVAILABLE" && -d "$NGINX_SITES_ENABLED" ]] || \
+        die "Nginx not configured for multi-site. Run install.sh first."
+    grep -q "sites-enabled" /etc/nginx/nginx.conf 2>/dev/null || \
+        die "nginx.conf missing sites-enabled include. Run install.sh first."
 }
 
 # ---------------------------------------------------------------------------
@@ -30,8 +24,9 @@ nginx_init() {
 # ---------------------------------------------------------------------------
 nginx_create_site() {
     local domain="$1"
-    local conf_file="$NGINX_SITES_AVAILABLE/${domain}.conf"
+    nginx_check_setup
 
+    local conf_file="$NGINX_SITES_AVAILABLE/${domain}.conf"
     GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
     render_template "$MWP_DIR/templates/nginx/multi-site.conf.tpl" > "$conf_file"
 

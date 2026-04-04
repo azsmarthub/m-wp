@@ -26,7 +26,10 @@ site_create() {
     site_exists "$domain" && die "Site '$domain' already exists. Run: mwp site info $domain"
 
     _load_site_deps
-    nginx_init
+
+    # Guard: ensure install.sh was run first
+    [[ -f "$MWP_SERVER_CONF" ]] || die "Server not initialized. Run install.sh first."
+    nginx_check_setup
 
     # --- Derive variables ---
     local slug site_user web_root cache_path db_name db_user db_pass redis_db
@@ -192,17 +195,25 @@ _site_install_wordpress() {
 }
 
 _site_issue_ssl_or_skip() {
-    # Check if domain resolves to this server
     local server_ip expected_ip
-    server_ip="$(server_get SERVER_IP)"
-    expected_ip="$(dig +short "$DOMAIN" 2>/dev/null | tail -1)" || expected_ip=""
+    server_ip="$(server_get "SERVER_IP")"
 
-    if [[ -n "$server_ip" && "$expected_ip" == "$server_ip" ]]; then
-        log_sub "DNS resolves to this server — issuing SSL..."
-        ssl_issue "$DOMAIN" || log_warn "SSL issue failed — run: mwp ssl issue $DOMAIN after DNS propagates"
+    # DNS lookup — prefer dig, fallback to getent/nslookup
+    if command -v dig >/dev/null 2>&1; then
+        expected_ip="$(dig +short "$DOMAIN" 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1)"
+    elif command -v getent >/dev/null 2>&1; then
+        expected_ip="$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1)"
     else
-        log_sub "DNS not yet pointing to this server (got: ${expected_ip:-none}, expected: ${server_ip})"
-        log_sub "Skip SSL — run: mwp ssl issue $DOMAIN after DNS"
+        expected_ip=""
+    fi
+
+    if [[ -n "$server_ip" && -n "$expected_ip" && "$expected_ip" == "$server_ip" ]]; then
+        log_sub "DNS resolves to this server — issuing SSL..."
+        source "$MWP_DIR/lib/multi-ssl.sh"
+        ssl_issue "$DOMAIN" || log_warn "SSL failed — run: mwp ssl issue $DOMAIN"
+    else
+        log_sub "DNS not pointing here yet (resolved: ${expected_ip:-none}, this server: ${server_ip:-unknown})"
+        log_sub "Skipping SSL — run after DNS propagates: mwp ssl issue $DOMAIN"
     fi
 }
 

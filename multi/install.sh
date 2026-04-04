@@ -106,8 +106,9 @@ step_system_prep() {
     apt-get update -qq 2>&1 | tail -1 || true
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -q 2>&1 | \
         grep -E "^(Get|Fetched|[0-9]+ upgraded)" | tail -3 || true
+    # dnsutils: dig — dùng cho DNS check khi issue SSL
     apt_install curl wget gnupg software-properties-common unzip git bc \
-        htop ncdu logrotate apt-transport-https ca-certificates lsb-release
+        htop ncdu logrotate apt-transport-https ca-certificates lsb-release dnsutils rsync
 
     # Swap (if not exists) — always 1GB regardless of RAM
     if ! swapon --show | grep -q '/'; then
@@ -133,8 +134,84 @@ step_nginx() {
         apt-get update -qq 2>&1 | tail -1 || true
         apt_install nginx
     fi
+
+    # --- Server-level Nginx config for multi-site ---
+    local ram_mb cpu_cores
+    ram_mb="$(detect_ram_mb)"
+    cpu_cores="$(detect_cpu_cores)"
+
+    # worker_connections: 1024 per core, min 1024
+    local worker_conn=$(( cpu_cores * 1024 ))
+    [[ $worker_conn -lt 1024 ]] && worker_conn=1024
+
+    cat > /etc/nginx/nginx.conf <<NGINXCONF
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log warn;
+
+events {
+    worker_connections ${worker_conn};
+    multi_accept on;
+    use epoll;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # Multi-domain: increase hash bucket size
+    server_names_hash_bucket_size 128;
+    server_names_hash_max_size 512;
+
+    # Performance
+    sendfile           on;
+    tcp_nopush         on;
+    tcp_nodelay        on;
+    keepalive_timeout  65;
+    keepalive_requests 100;
+    types_hash_max_size 2048;
+
+    # Security — hide version
+    server_tokens off;
+
+    # Buffer tuning
+    client_max_body_size     64M;
+    client_body_buffer_size  128k;
+    large_client_header_buffers 4 16k;
+
+    # Gzip (global)
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_types
+        text/plain text/css text/xml text/javascript
+        application/json application/javascript application/xml
+        application/rss+xml image/svg+xml;
+
+    # Logging
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                    '\$status \$body_bytes_sent "\$http_referer" '
+                    '"\$http_user_agent" cache:\$upstream_cache_status';
+    access_log /var/log/nginx/access.log main;
+
+    # Include per-site configs
+    include /etc/nginx/sites-enabled/*.conf;
+}
+NGINXCONF
+
+    # Setup sites directories
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+    # Remove default site (conflicts with our multi-site setup)
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf 2>/dev/null || true
+
+    nginx -t 2>/dev/null || die "Nginx config test failed after setup"
     systemctl enable nginx
-    log_sub "Nginx $(nginx -v 2>&1 | grep -o '[0-9.]*') ready"
+    systemctl restart nginx
+    log_sub "Nginx $(nginx -v 2>&1 | grep -o '[0-9.]*') ready (multi-site config applied)"
 }
 
 step_php() {
@@ -162,9 +239,31 @@ step_php() {
         "php${default_php}-imagick" \
         "php${default_php}-soap"
 
+    # Disable default www pool (runs as www-data, not isolated)
+    local default_pool="/etc/php/${default_php}/fpm/pool.d/www.conf"
+    if [[ -f "$default_pool" ]]; then
+        mv "$default_pool" "${default_pool}.disabled"
+        log_sub "Default www pool disabled (not isolated)"
+    fi
+
+    # Global PHP-FPM config: logging
+    sed -i 's|^;error_log =.*|error_log = /var/log/mwp/php-fpm.log|' \
+        "/etc/php/${default_php}/fpm/php-fpm.conf" 2>/dev/null || true
+
+    # OPcache global config
+    cat > "/etc/php/${default_php}/fpm/conf.d/99-mwp-opcache.ini" <<INI
+opcache.enable=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=8
+opcache.max_accelerated_files=10000
+opcache.revalidate_freq=2
+opcache.save_comments=1
+INI
+
     systemctl enable "php${default_php}-fpm"
+    systemctl restart "php${default_php}-fpm"
     server_set "DEFAULT_PHP" "$default_php"
-    log_sub "PHP ${default_php} ready"
+    log_sub "PHP ${default_php} ready (default www pool disabled)"
 }
 
 step_mariadb() {
@@ -174,9 +273,14 @@ step_mariadb() {
     fi
     systemctl enable mariadb
 
-    # Secure install (non-interactive)
+    # Secure install — skip if root pass already set (idempotent)
     local root_pass
-    root_pass="$(generate_password 32)"
+    root_pass="$(server_get "DB_ROOT_PASS" 2>/dev/null)"
+    if [[ -n "$root_pass" ]]; then
+        log_sub "MariaDB already secured (root pass exists), skipping."
+    else
+        root_pass="$(generate_password 32)"
+    fi
     mysql -u root 2>/dev/null <<SQL || true
 ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${root_pass}');
 DELETE FROM mysql.user WHERE User='';

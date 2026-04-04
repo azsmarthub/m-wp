@@ -159,7 +159,8 @@ cmd_site() {
             site_exists "$domain" || die "Site '$domain' not found."
             local user
             user="$(site_get "$domain" SITE_USER)"
-            exec su - "$user"
+            # Site user shell is /usr/sbin/nologin (security), override with bash
+            exec su -s /bin/bash - "$user"
             ;;
         *) cmd_help; die "Unknown site subcommand: $sub" ;;
     esac
