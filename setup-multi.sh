@@ -43,12 +43,12 @@ if [[ -f /etc/os-release ]]; then
     case "${ID:-}" in
         ubuntu)
             case "${VERSION_ID:-}" in
-                22.04|24.04) ok "OS: Ubuntu $VERSION_ID" ;;
-                *) printf '%b!%b  Untested OS: Ubuntu %s (recommended: 22.04 / 24.04)\n' \
+                24.04) ok "OS: Ubuntu $VERSION_ID" ;;
+                *) printf '%b!%b  Unsupported Ubuntu version: %s (requires: 24.04 LTS)\n' \
                        '\033[1;33m' "$NC" "${VERSION_ID:-unknown}" ;;
             esac
             ;;
-        *) printf '%b!%b  Untested OS: %s\n' '\033[1;33m' "$NC" "${PRETTY_NAME:-unknown}" ;;
+        *) printf '%b!%b  Unsupported OS: %s (requires Ubuntu 24.04 LTS)\n' '\033[1;33m' "$NC" "${PRETTY_NAME:-unknown}" ;;
     esac
 else
     die "Cannot detect OS"

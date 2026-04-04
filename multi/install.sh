@@ -37,28 +37,26 @@ print_banner() {
 preflight_checks() {
     local ok=1
 
-    # OS check
+    # OS check — Ubuntu 24.04 only supported
     if [[ -f /etc/os-release ]]; then
         # shellcheck source=/dev/null
         source /etc/os-release
         case "${ID:-}" in
             ubuntu)
                 case "${VERSION_ID:-}" in
-                    22.04|24.04) ;;
-                    *) log_warn "Untested Ubuntu version: $VERSION_ID (recommended: 22.04 / 24.04)" ;;
+                    24.04) log_info "OS: Ubuntu ${VERSION_ID} ✔" ;;
+                    *) log_warn "Unsupported Ubuntu version: $VERSION_ID (requires: 24.04 LTS)" ;;
                 esac
                 ;;
-            debian) ;;
-            *) log_warn "Untested OS: ${PRETTY_NAME:-unknown}" ;;
+            *) log_warn "Unsupported OS: ${PRETTY_NAME:-unknown} (requires Ubuntu 24.04 LTS)" ;;
         esac
     fi
 
-    # RAM
+    # RAM — warn only, do not abort (1GB is enough to install, tight for 3+ sites)
     local ram_mb
     ram_mb="$(detect_ram_mb)"
     if [[ $ram_mb -lt 1024 ]]; then
-        log_warn "RAM: ${ram_mb}MB — minimum 1GB recommended (2GB+ for multi-site)"
-        ok=0
+        log_warn "RAM: ${ram_mb}MB — tight. Recommended: 1GB min (2GB+ for 3+ sites)"
     else
         log_info "RAM: ${ram_mb}MB ✔"
     fi
@@ -78,8 +76,6 @@ preflight_checks() {
         log_warn "Run 'mwp status' to check current state."
         confirm "Re-run setup anyway?" || exit 0
     fi
-
-    [[ $ok -eq 1 ]] || die "Pre-flight checks failed. Fix issues above and retry."
 }
 
 # ---------------------------------------------------------------------------
@@ -268,7 +264,11 @@ INI
 
 step_mariadb() {
     if ! command -v mariadb >/dev/null 2>&1; then
-        log_sub "Installing MariaDB 10.11..."
+        log_sub "Adding MariaDB 11.4 LTS official repo..."
+        curl -fsSL https://downloads.mariadb.com/MariaDB/mariadb_repo_setup \
+            | bash -s -- --mariadb-server-version="mariadb-11.4" 2>&1 | tail -3 || true
+        apt-get update -qq 2>&1 | tail -1 || true
+        log_sub "Installing MariaDB 11.4..."
         apt_install mariadb-server mariadb-client
     fi
     systemctl enable mariadb
@@ -357,21 +357,19 @@ step_certbot() {
 }
 
 step_firewall() {
-    if command -v ufw >/dev/null 2>&1; then
-        ufw --force reset >/dev/null 2>&1 || true
-        ufw default deny incoming >/dev/null 2>&1
-        ufw default allow outgoing >/dev/null 2>&1
-        ufw allow ssh >/dev/null 2>&1
-        ufw allow 'Nginx Full' >/dev/null 2>&1
-        ufw --force enable >/dev/null 2>&1
-        log_sub "UFW enabled (SSH + HTTP/HTTPS)"
-    else
+    # UFW
+    if ! command -v ufw >/dev/null 2>&1; then
         apt_install ufw
-        step_firewall
     fi
-}
+    ufw --force reset >/dev/null 2>&1 || true
+    ufw default deny incoming >/dev/null 2>&1
+    ufw default allow outgoing >/dev/null 2>&1
+    ufw allow ssh >/dev/null 2>&1
+    ufw allow 'Nginx Full' >/dev/null 2>&1
+    ufw --force enable >/dev/null 2>&1
+    log_sub "UFW enabled (SSH + HTTP/HTTPS)"
 
-step_fail2ban() {
+    # Fail2ban
     apt_install fail2ban
     cat > /etc/fail2ban/jail.local <<F2B
 [DEFAULT]
@@ -480,7 +478,9 @@ print_summary() {
 main() {
     print_banner
     preflight_checks
-    detect_ram_mb >/dev/null
+
+    # Collect optional inputs BEFORE automated steps (no interruptions mid-install)
+    step_panel_url
 
     confirm "Start server setup?" || exit 0
 
@@ -495,9 +495,7 @@ main() {
     run_step 6 9 "Installing WP-CLI"     step_wpcli
     run_step 7 9 "Installing Certbot"    step_certbot
     run_step 8 9 "Firewall + Fail2ban"   step_firewall
-    step_fail2ban
     run_step 9 9 "Isolation hardening"   step_isolation
-    step_panel_url
     step_cli
 
     print_summary "$start_time"

@@ -73,7 +73,8 @@ m-wp/
 │   ├── multi-ssl.sh      ← ssl_issue()
 │   ├── multi-backup.sh   ← backup_site(), restore_site()
 │   ├── multi-isolation.sh← isolation_global_apply(), isolation_site_apply(), isolation_check()
-│   └── multi-tuning.sh   ← tuning_retune_all(), tuning_report(), tuning_calc_*()
+│   ├── multi-tuning.sh   ← tuning_retune_all(), tuning_report(), tuning_calc_*()
+│   └── multi-menu.sh     ← Interactive TUI: menu_root(), menu_sites(), menu_site_detail()
 ├── templates/
 │   ├── nginx/
 │   │   ├── multi-site.conf.tpl      ← Nginx vhost per site (FastCGI cache + PHP socket)
@@ -211,7 +212,13 @@ variables     → UPPER_CASE (exported) hoặc lower_case (local)
 ## 9. CLI REFERENCE (`mwp help`)
 
 ```
-mwp sites                        List all sites
+# Interactive mode (3-level TUI menu)
+mwp                              Root menu (server overview → category → site)
+mwp site                         Sites list (interactive, numbered picker)
+mwp site <keyword>               Sites list filtered by keyword (e.g. "mwp site do1")
+mwp sites                        Alias for mwp site
+
+# Direct commands (bypass menu, non-interactive)
 mwp site create <domain>         Create new WordPress site
 mwp site delete <domain>         Delete site
 mwp site info   <domain>         Show site details
@@ -305,8 +312,8 @@ mwp status <domain>              Single site status
 
 ## 12. ENVIRONMENT
 
-- **OS target:** Ubuntu 22.04 / 24.04 LTS
+- **OS target:** Ubuntu 24.04 LTS (only supported version)
 - **Min spec test:** 1 CPU / 1GB RAM + 1GB swap (auto-created)
 - **Recommended multi-site:** 1 CPU / 2GB RAM (3-5 sites)
-- **Stack:** Nginx mainline + PHP-FPM 8.3 (default) + MariaDB 10.11 + Redis 7 + WP-CLI
+- **Stack:** Nginx mainline + PHP-FPM 8.3 (default) + MariaDB 11.4 LTS + Redis 7 + WP-CLI
 - **Install path:** `/opt/m-wp` (hoặc bất kỳ đâu, MWP_DIR tự detect qua symlink)

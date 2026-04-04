@@ -26,6 +26,11 @@ _load_site_libs() {
     done
 }
 
+# Load interactive menu lib lazily
+_load_menu_lib() {
+    source "$MWP_DIR/lib/multi-menu.sh"
+}
+
 mwp_init
 trap 'trap_error $LINENO "$BASH_COMMAND"' ERR
 
@@ -152,6 +157,19 @@ cmd_site() {
     local sub="${1:-}"
     shift || true
 
+    # Known direct subcommands — handle non-interactively
+    case "$sub" in
+        create|delete|info|enable|disable|shell|check-isolation) ;;
+        *)
+            # No subcommand or unrecognised → interactive menu
+            # Treat $sub as a filter string (e.g. "mwp site do1" filters by "do1")
+            _load_site_libs
+            _load_menu_lib
+            menu_sites "$sub"
+            return
+            ;;
+    esac
+
     _load_site_libs
 
     case "$sub" in
@@ -161,7 +179,6 @@ cmd_site() {
         enable)  require_root; site_enable "${1:-}" ;;
         disable) require_root; site_disable "${1:-}" ;;
         check-isolation)
-            _load_site_libs
             isolation_check "${1:-}"
             ;;
         shell)
@@ -172,7 +189,6 @@ cmd_site() {
             # Site user shell is /usr/sbin/nologin (security), override with bash
             exec su -s /bin/bash - "$user"
             ;;
-        *) cmd_help; die "Unknown site subcommand: $sub" ;;
     esac
 }
 
@@ -275,14 +291,24 @@ cmd_restore() {
 # Router
 # ---------------------------------------------------------------------------
 main() {
-    local cmd="${1:-help}"
+    local cmd="${1:-}"
     shift || true
+
+    # No command → launch interactive root menu
+    if [[ -z "$cmd" ]]; then
+        _load_site_libs
+        _load_menu_lib
+        menu_root
+        return
+    fi
 
     case "$cmd" in
         help|--help|-h) cmd_help ;;
         version|--version|-v) printf 'mwp v%s\n' "$MWP_VERSION" ;;
         status)  cmd_status "$@" ;;
-        sites)   registry_print_list ;;
+        sites)
+            _load_site_libs; _load_menu_lib; menu_sites "${1:-}"
+            ;;
         site)    cmd_site "$@" ;;
         php)     cmd_php "$@" ;;
         cache)   cmd_cache "$@" ;;

@@ -18,7 +18,7 @@ sudo bash /opt/m-wp/multi/install.sh
 
 ## Requirements
 
-- Ubuntu 22.04 or 24.04 LTS (fresh install)
+- Ubuntu 24.04 LTS (fresh install)
 - 1 CPU / 1GB RAM minimum (2GB+ recommended for 3+ sites)
 - Root access
 
@@ -28,7 +28,7 @@ sudo bash /opt/m-wp/multi/install.sh
 |-----------|---------|
 | Nginx | Mainline (official repo) |
 | PHP-FPM | 8.3 (default, multi-version supported) |
-| MariaDB | 10.11+ |
+| MariaDB | 11.4 LTS |
 | Redis | 7 |
 | WP-CLI | Latest |
 | Certbot | Latest |
