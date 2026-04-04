@@ -392,6 +392,61 @@ F2B
     log_sub "Fail2ban ready"
 }
 
+step_isolation() {
+    source "$MWP_DIR/lib/multi-isolation.sh"
+    isolation_global_apply
+}
+
+step_panel_url() {
+    local server_ip
+    server_ip="$(detect_ip)"
+
+    # Ask for panel hostname (optional — can skip)
+    local panel_domain=""
+    printf '\n%b  Panel URL setup (optional)%b\n' "$BOLD" "$NC"
+    printf '  This sets a dedicated hostname for the mwp web UI (future).\n'
+    printf '  Example: sv1.yourdomain.com  →  https://sv1.yourdomain.com\n'
+    printf '  Press ENTER to skip.\n\n'
+    printf '  Panel hostname: '
+    read -r panel_domain
+
+    if [[ -n "$panel_domain" ]]; then
+        validate_domain "$panel_domain" || { log_warn "Invalid domain — skipping panel URL setup."; return 0; }
+
+        server_set "PANEL_DOMAIN" "$panel_domain"
+
+        # Create placeholder web root
+        mkdir -p /var/www/mwp-panel
+        cat > /var/www/mwp-panel/index.html <<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>mwp Panel</title>
+<style>body{font-family:monospace;background:#0f0f0f;color:#e0e0e0;display:flex;
+align-items:center;justify-content:center;height:100vh;margin:0;}
+.box{text-align:center;padding:2rem;border:1px solid #333;border-radius:8px;}
+h1{color:#4ade80;font-size:1.5rem;}p{color:#888;}</style></head>
+<body><div class="box">
+<h1>mwp Panel</h1>
+<p>Server: ${server_ip}</p>
+<p>Web UI coming soon. Use <code>mwp</code> CLI in the meantime.</p>
+</div></body></html>
+HTML
+
+        # Create Nginx vhost for panel domain
+        local panel_conf="/etc/nginx/sites-available/mwp-panel.conf"
+        PANEL_DOMAIN="$panel_domain" \
+        GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
+        render_template "$MWP_DIR/templates/nginx/panel-placeholder.conf.tpl" > "$panel_conf"
+
+        ln -sf "$panel_conf" /etc/nginx/sites-enabled/mwp-panel.conf
+        nginx -t 2>/dev/null && systemctl reload nginx
+        log_success "Panel URL configured: http://${panel_domain}"
+        log_sub "Issue SSL later: mwp ssl issue ${panel_domain}"
+    else
+        log_sub "Panel URL skipped — run 'mwp panel setup' later to configure."
+    fi
+}
+
 step_cli() {
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/local/bin/mwp
     chmod +x "$SCRIPT_DIR/menu.sh"
@@ -432,15 +487,17 @@ main() {
     local start_time
     start_time="$(date +%s)"
 
-    run_step 1 8 "System preparation"   step_system_prep
-    run_step 2 8 "Installing Nginx"     step_nginx
-    run_step 3 8 "Installing PHP 8.3"   step_php
-    run_step 4 8 "Installing MariaDB"   step_mariadb
-    run_step 5 8 "Installing Redis"     step_redis
-    run_step 6 8 "Installing WP-CLI"    step_wpcli
-    run_step 7 8 "Installing Certbot"   step_certbot
-    run_step 8 8 "Firewall + Fail2ban"  step_firewall
+    run_step 1 9 "System preparation"    step_system_prep
+    run_step 2 9 "Installing Nginx"      step_nginx
+    run_step 3 9 "Installing PHP 8.3"    step_php
+    run_step 4 9 "Installing MariaDB"    step_mariadb
+    run_step 5 9 "Installing Redis"      step_redis
+    run_step 6 9 "Installing WP-CLI"     step_wpcli
+    run_step 7 9 "Installing Certbot"    step_certbot
+    run_step 8 9 "Firewall + Fail2ban"   step_firewall
     step_fail2ban
+    run_step 9 9 "Isolation hardening"   step_isolation
+    step_panel_url
     step_cli
 
     print_summary "$start_time"

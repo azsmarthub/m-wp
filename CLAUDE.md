@@ -5,7 +5,7 @@
 >
 > **Project:** `~/projects/m-wp`
 > **CLI command:** `mwp`
-> **Version:** 0.1.0 (Phase 1 complete)
+> **Version:** 0.2.0 (Phase 1-3 complete)
 > **Last updated:** 2026-04-04
 
 ---
@@ -60,6 +60,7 @@ Phase B — Site Management (chạy nhiều lần):
 
 ```
 m-wp/
+├── setup-multi.sh        ← One-liner installer: curl | bash
 ├── multi/
 │   ├── install.sh        ← Phase A: server setup (chạy 1 lần, cần root)
 │   └── menu.sh           ← Phase B: CLI 'mwp' (symlink tới /usr/local/bin/mwp)
@@ -70,13 +71,16 @@ m-wp/
 │   ├── multi-nginx.sh    ← nginx_create/delete/enable/disable_site(), cache_purge_site()
 │   ├── multi-php.sh      ← php_install_version(), php_switch_site(), php_create/delete_pool()
 │   ├── multi-ssl.sh      ← ssl_issue()
-│   └── multi-backup.sh   ← backup_site(), restore_site()
+│   ├── multi-backup.sh   ← backup_site(), restore_site()
+│   ├── multi-isolation.sh← isolation_global_apply(), isolation_site_apply(), isolation_check()
+│   └── multi-tuning.sh   ← tuning_retune_all(), tuning_report(), tuning_calc_*()
 ├── templates/
 │   ├── nginx/
-│   │   └── multi-site.conf.tpl   ← Nginx vhost per site (FastCGI cache + PHP socket)
+│   │   ├── multi-site.conf.tpl      ← Nginx vhost per site (FastCGI cache + PHP socket)
+│   │   └── panel-placeholder.conf.tpl ← Nginx vhost for panel URL (sv1.domain.com)
 │   └── php/
-│       └── multi-pool.conf.tpl   ← PHP-FPM pool per site (isolated)
-└── VERSION               ← 0.1.0
+│       └── multi-pool.conf.tpl      ← PHP-FPM pool per site (isolated)
+└── VERSION               ← 0.2.0
 ```
 
 ---
@@ -239,51 +243,51 @@ mwp status <domain>              Single site status
 ## 10. WHAT'S DONE / WHAT'S NEXT
 
 ### ✅ Phase 1 — Foundation (COMPLETE)
+- Core libs, site CRUD, Nginx/PHP/SSL/Backup, templates
+- Clean Phase A (install) / Phase B (site management) separation
 
-- [x] `lib/common.sh` — core helpers, registry, template renderer
-- [x] `lib/registry.sh` — site registry CRUD
-- [x] `multi/install.sh` — server setup (Nginx+PHP+MariaDB+Redis+WP-CLI+UFW)
-- [x] `multi/menu.sh` — `mwp` CLI router
-- [x] `lib/multi-site.sh` — `site_create/delete/enable/disable`
-- [x] `lib/multi-nginx.sh` — per-site vhost, FastCGI cache, `cache_purge_site`
-- [x] `lib/multi-php.sh` — multi-version PHP, isolated FPM pool, `php_switch_site`
-- [x] `lib/multi-ssl.sh` — Certbot SSL issue + HTTPS vhost
-- [x] `lib/multi-backup.sh` — backup/restore per site, auto-rotate
-- [x] `templates/nginx/multi-site.conf.tpl`
-- [x] `templates/php/multi-pool.conf.tpl`
-- [x] Architecture review: clean Phase A (install) / Phase B (site management) separation
+### ✅ Phase 2 — Isolation + Retune (COMPLETE)
+- [x] `lib/multi-isolation.sh` — `isolation_global_apply()`, `isolation_site_apply()`, `isolation_check()`
+- [x] `chmod 711 /home` tại install time (global isolation)
+- [x] `mwp site check-isolation <domain>` — audit 9 isolation layers
+- [x] `lib/multi-tuning.sh` — `tuning_retune_all()`, `tuning_report()`
+- [x] `mwp retune` + `mwp retune --dry-run`
+- [x] Auto-retune trigger sau `site create` và `site delete`
 
-### 🔲 Phase 2 — Isolation Hardening
+### ✅ Phase 3 — Deploy Ready (COMPLETE)
+- [x] `setup-multi.sh` — one-liner `curl | bash` installer
+- [x] Panel URL: `mwp panel setup/info/ssl` — sv1.domain.com placeholder cho web UI sau
+- [x] `templates/nginx/panel-placeholder.conf.tpl`
+- [x] `README.md`
 
-- [ ] `lib/multi-isolation.sh`
-  - Filesystem: `chmod 711 /home` (traverse không list)
-  - PHP-FPM: validate `open_basedir` + `disable_functions` per pool
-  - MariaDB: verify user chỉ có quyền trên DB của mình
-  - `mwp site check-isolation <domain>` — report isolation status
+### 🔲 Phase 4 — Test trên VPS thật (NEXT)
+- [ ] Ubuntu 22.04, 1 CPU / 1GB RAM — fresh install
+- [ ] Test: install → create 2 sites → php switch → retune → backup/restore
+- [ ] Test: `mwp site check-isolation` → tất cả green
+- [ ] Fix bugs phát sinh
+- [ ] Push GitHub repo
 
-### 🔲 Phase 3 — GeoIP & DNS
+### 🔲 Phase 5 — Nameserver / PowerDNS
+- [ ] `lib/multi-dns.sh` — cài PowerDNS + MySQL backend
+- [ ] ns1/ns2 hostname → domains trỏ NS về VPS này được phục vụ DNS
+- [ ] `mwp dns zone-add/del <domain>`
+- [ ] `mwp dns record-add/del/list <domain>`
+- [ ] Auto-add DNS zone khi `mwp site create`
 
-- [ ] `lib/multi-geoip.sh` — GeoIP2 (MaxMind) block/allow by country
-- [ ] `lib/multi-dns.sh` — Cloudflare API: auto-point A record, manage records
+### 🔲 Phase 6 — GeoIP (MaxMind)
+- [ ] `lib/multi-geoip.sh`
+- [ ] `mwp geoip block <domain> <country_code>`
+- [ ] `mwp geoip allow-only <domain> <country_codes>`
+- [ ] Yêu cầu: MaxMind account (free GeoLite2)
 
-### 🔲 Phase 4 — Resource Management
+### 🔲 Phase 7 — Resource Limits (optional)
+- [ ] `mwp resource set <domain> --cpu 50% --mem 512M`
+- [ ] cgroups v2 via systemd user slice
 
-- [ ] `lib/multi-resource.sh` — cgroups v2 via systemd slice (CPU%, MemoryMax per site)
-- [ ] Resource plans: small/medium/large/unlimited
-- [ ] Auto-retune FPM pools khi thêm/xóa site
-
-### 🔲 Phase 5 — Polish & Testing
-
-- [ ] `setup-multi.sh` — one-liner installer: `curl -sSL .../setup-multi.sh | bash`
-- [ ] Shellcheck CI
-- [ ] Test trên VPS thật (Ubuntu 22.04 / 24.04)
-- [ ] GitHub repo + README
-
-### 🔲 Tương lai (chưa scope)
-
-- Clone site (clone WordPress từ domain này sang domain khác)
-- WooCommerce preset (bypass cache cho cart/checkout)
-- phpMyAdmin per-site (optional)
+### 🔲 Tương lai
+- Clone site (domain A → domain B với data migration)
+- WooCommerce preset (cache bypass rules)
+- phpMyAdmin per-site (`mwp db pma <domain>`)
 
 ---
 

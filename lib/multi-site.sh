@@ -69,7 +69,7 @@ site_create() {
 
     local start_ts
     start_ts="$(date +%s)"
-    local total=7
+    local total=9
 
     log_step 1 $total "Creating system user + directories"
     _site_create_user
@@ -86,10 +86,18 @@ site_create() {
     log_step 5 $total "Installing WordPress"
     _site_install_wordpress
 
-    log_step 6 $total "Issuing SSL certificate"
+    log_step 6 $total "Applying isolation hardening"
+    source "$MWP_DIR/lib/multi-isolation.sh"
+    isolation_site_apply "$site_user" "$web_root"
+
+    log_step 7 $total "Issuing SSL certificate"
     _site_issue_ssl_or_skip
 
-    log_step 7 $total "Registering site"
+    log_step 8 $total "Auto-retune FPM pools"
+    source "$MWP_DIR/lib/multi-tuning.sh"
+    tuning_retune_all
+
+    log_step 9 $total "Registering site"
     registry_add "$domain"
 
     local elapsed=$(( $(date +%s) - start_ts ))
@@ -301,6 +309,14 @@ SQL
 
     # 7. Registry
     registry_remove "$domain"
+
+    # 8. Retune remaining sites
+    local remaining
+    remaining="$(site_count)"
+    if [[ $remaining -gt 0 ]]; then
+        source "$MWP_DIR/lib/multi-tuning.sh"
+        tuning_retune_all
+    fi
 
     log_success "Site '$domain' deleted."
 }

@@ -20,7 +20,7 @@ source "$MWP_DIR/lib/registry.sh"
 
 # Load per-site libs lazily
 _load_site_libs() {
-    for _lib in nginx php site ssl backup; do
+    for _lib in nginx php site ssl backup isolation tuning; do
         local f="$MWP_DIR/lib/multi-${_lib}.sh"
         [[ -f "$f" ]] && source "$f"
     done
@@ -48,6 +48,7 @@ ${BOLD}Site management:${NC}
   mwp site enable  <domain>        Enable disabled site
   mwp site disable <domain>        Disable site (keeps files)
   mwp site shell   <domain>        Enter site user shell
+  mwp site check-isolation <domain> Audit isolation layers
 
 ${BOLD}PHP:${NC}
   mwp php list                     List installed PHP versions
@@ -72,6 +73,11 @@ ${BOLD}Backup:${NC}
 ${BOLD}Server:${NC}
   mwp status                       Server + all sites overview
   mwp status <domain>              Single site status
+  mwp retune                       Recalculate + apply FPM pools for all sites
+  mwp retune --dry-run             Show what retune would change
+  mwp panel info                   Show panel URL info
+  mwp panel setup                  Configure panel hostname (sv1.yourdomain.com)
+  mwp panel ssl                    Issue SSL for panel domain
 
 ${BOLD}Examples:${NC}
   mwp site create example.com
@@ -154,6 +160,10 @@ cmd_site() {
         info)    registry_print_info "${1:-}" ;;
         enable)  require_root; site_enable "${1:-}" ;;
         disable) require_root; site_disable "${1:-}" ;;
+        check-isolation)
+            _load_site_libs
+            isolation_check "${1:-}"
+            ;;
         shell)
             local domain="${1:-}"
             site_exists "$domain" || die "Site '$domain' not found."
@@ -279,6 +289,50 @@ main() {
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
+        panel)
+            local sub="${1:-info}"
+            case "$sub" in
+                info)
+                    local pd
+                    pd="$(server_get "PANEL_DOMAIN" 2>/dev/null)"
+                    printf '\n%b  mwp Panel URL%b\n' "$BOLD" "$NC"
+                    printf '  %s\n' "──────────────────────────────────"
+                    if [[ -n "$pd" ]]; then
+                        printf '  Domain:  %s\n' "$pd"
+                        printf '  HTTP:    http://%s\n' "$pd"
+                        local ssl
+                        ssl="$(site_get "mwp-panel" SSL_ENABLED 2>/dev/null || true)"
+                        [[ "$ssl" == "yes" ]] && printf '  HTTPS:   https://%s\n' "$pd"
+                    else
+                        printf '  Not configured. Run: mwp panel setup\n'
+                    fi
+                    printf '\n'
+                    ;;
+                setup)
+                    require_root
+                    source "$MWP_DIR/multi/install.sh" 2>/dev/null || true
+                    step_panel_url
+                    ;;
+                ssl)
+                    require_root
+                    local pd
+                    pd="$(server_get "PANEL_DOMAIN")"
+                    [[ -z "$pd" ]] && die "Panel domain not configured. Run: mwp panel setup"
+                    _load_site_libs
+                    ssl_issue "$pd"
+                    ;;
+                *) die "Usage: mwp panel [info|setup|ssl]" ;;
+            esac
+            ;;
+        retune)
+            _load_site_libs
+            require_root
+            if [[ "${1:-}" == "--dry-run" ]]; then
+                tuning_report
+            else
+                tuning_retune_all
+            fi
+            ;;
         *)
             log_warn "Unknown command: $cmd"
             cmd_help
