@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# lib/multi-site.sh — Site CRUD for mwp
+# Orchestrates: user, dirs, DB, PHP pool, Nginx, WordPress, SSL, registry
+
+[[ -n "${_MWP_SITE_LOADED:-}" ]] && return 0
+_MWP_SITE_LOADED=1
+
+# Lazy-load dependencies
+_site_deps_loaded=0
+_load_site_deps() {
+    [[ $_site_deps_loaded -eq 1 ]] && return
+    source "$MWP_DIR/lib/multi-nginx.sh"
+    source "$MWP_DIR/lib/multi-php.sh"
+    _site_deps_loaded=1
+}
+
+# ---------------------------------------------------------------------------
+# site_create <domain>
+# ---------------------------------------------------------------------------
+site_create() {
+    local domain="${1:-}"
+
+    # --- Validate ---
+    [[ -z "$domain" ]] && die "Usage: mwp site create <domain>"
+    validate_domain "$domain" || die "Invalid domain: $domain"
+    site_exists "$domain" && die "Site '$domain' already exists. Run: mwp site info $domain"
+
+    _load_site_deps
+    nginx_init
+
+    # --- Derive variables ---
+    local slug site_user web_root cache_path db_name db_user db_pass redis_db
+    slug="$(domain_to_slug "$domain")"
+    site_user="$slug"
+    web_root="/home/${site_user}/${domain}"
+    cache_path="/home/${site_user}/cache/fastcgi"
+
+    # DB names: max 32 chars for MariaDB user/db
+    db_name="wp_$(printf '%s' "$slug" | cut -c1-28)"
+    db_user="$(printf '%s' "$db_name" | cut -c1-32)"
+    db_pass="$(generate_password 24)"
+    redis_db="$(redis_alloc_db "$domain")"
+
+    # PHP version: use server default or 8.3
+    local PHP_VERSION
+    PHP_VERSION="$(server_get "DEFAULT_PHP")"
+    PHP_VERSION="${PHP_VERSION:-8.3}"
+
+    # Export for template rendering and sub-functions
+    export DOMAIN="$domain"
+    export SITE_USER="$site_user"
+    export WEB_ROOT="$web_root"
+    export CACHE_PATH="$cache_path"
+    export PHP_VERSION
+    export DB_NAME="$db_name"
+    export DB_USER="$db_user"
+    export DB_PASS="$db_pass"
+    export REDIS_DB="$redis_db"
+
+    log_info "Creating site: $domain"
+    printf '  User:    %s\n' "$site_user"
+    printf '  PHP:     %s\n' "$PHP_VERSION"
+    printf '  WebRoot: %s\n' "$web_root"
+    printf '  Redis:   DB %s\n' "$redis_db"
+    printf '\n'
+
+    local start_ts
+    start_ts="$(date +%s)"
+    local total=7
+
+    log_step 1 $total "Creating system user + directories"
+    _site_create_user
+
+    log_step 2 $total "Setting up MariaDB database"
+    _site_create_db
+
+    log_step 3 $total "Creating PHP-FPM pool"
+    php_create_pool "$domain"
+
+    log_step 4 $total "Creating Nginx vhost"
+    nginx_create_site "$domain"
+
+    log_step 5 $total "Installing WordPress"
+    _site_install_wordpress
+
+    log_step 6 $total "Issuing SSL certificate"
+    _site_issue_ssl_or_skip
+
+    log_step 7 $total "Registering site"
+    registry_add "$domain"
+
+    local elapsed=$(( $(date +%s) - start_ts ))
+    printf '\n%b✔ Site created in %ds%b\n' "$GREEN" "$elapsed" "$NC"
+    _site_print_credentials
+}
+
+# ---------------------------------------------------------------------------
+# Helpers for site_create
+# ---------------------------------------------------------------------------
+_site_create_user() {
+    if ! id "$SITE_USER" &>/dev/null; then
+        useradd --create-home --shell /usr/sbin/nologin "$SITE_USER"
+        log_sub "User created: $SITE_USER"
+    else
+        log_sub "User already exists: $SITE_USER"
+    fi
+
+    mkdir -p "$WEB_ROOT" \
+              "$CACHE_PATH" \
+              "/home/${SITE_USER}/logs" \
+              "/home/${SITE_USER}/backups" \
+              "/home/${SITE_USER}/tmp"
+
+    chown -R "${SITE_USER}:${SITE_USER}" "/home/${SITE_USER}"
+    chmod 750 "/home/${SITE_USER}"
+
+    # www-data needs read access for static files
+    usermod -aG "$SITE_USER" www-data 2>/dev/null || true
+
+    log_sub "Directories ready under /home/${SITE_USER}/"
+}
+
+_site_create_db() {
+    local root_pass
+    root_pass="$(server_get "DB_ROOT_PASS")"
+    [[ -z "$root_pass" ]] && die "DB root password not found in server config. Was install.sh run?"
+
+    mysql -u root -p"${root_pass}" 2>/dev/null <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+    log_sub "Database '${DB_NAME}' created, user '${DB_USER}' granted access"
+}
+
+_site_install_wordpress() {
+    # Ensure WP-CLI available
+    command -v wp >/dev/null 2>&1 || die "WP-CLI not found. Run install.sh first."
+
+    # Generate WP credentials
+    WP_ADMIN_USER="admin"
+    WP_ADMIN_EMAIL="admin@${DOMAIN}"
+    WP_ADMIN_PASS="$(generate_password 20)"
+
+    local wp="sudo -u ${SITE_USER} wp --allow-root --path=${WEB_ROOT}"
+
+    log_sub "Downloading WordPress core..."
+    $wp core download --locale=en_US 2>&1 | grep -v Deprecated | grep -v Warning || true
+
+    log_sub "Creating wp-config.php..."
+    $wp config create \
+        --dbname="$DB_NAME" \
+        --dbuser="$DB_USER" \
+        --dbpass="$DB_PASS" \
+        --dbhost="localhost" \
+        --dbprefix="wp_" \
+        --skip-check 2>&1 | grep -v Deprecated || true
+
+    # Redis config
+    $wp config set WP_REDIS_SCHEME "unix"    2>&1 | grep -v Deprecated || true
+    $wp config set WP_REDIS_PATH   "$(server_get REDIS_SOCK)" 2>&1 | grep -v Deprecated || true
+    $wp config set WP_REDIS_DATABASE "$REDIS_DB" --raw 2>&1 | grep -v Deprecated || true
+    $wp config set WP_CACHE_KEY_SALT "${DOMAIN}_" 2>&1 | grep -v Deprecated || true
+
+    log_sub "Installing WordPress..."
+    $wp core install \
+        --url="http://${DOMAIN}" \
+        --title="$DOMAIN" \
+        --admin_user="$WP_ADMIN_USER" \
+        --admin_email="$WP_ADMIN_EMAIL" \
+        --admin_password="$WP_ADMIN_PASS" \
+        --skip-email 2>&1 | grep -v Deprecated || true
+
+    log_sub "Installing Redis Object Cache plugin..."
+    $wp plugin install redis-cache --activate 2>&1 | grep -v Deprecated | grep -v Warning || true
+    $wp redis enable 2>&1 | grep -v Deprecated || true
+
+    # Permissions
+    find "$WEB_ROOT" -type d -exec chmod 750 {} \;
+    find "$WEB_ROOT" -type f -exec chmod 640 {} \;
+    chmod 600 "${WEB_ROOT}/wp-config.php"
+    chown -R "${SITE_USER}:${SITE_USER}" "$WEB_ROOT"
+
+    # WP cron via system cron (disable built-in)
+    $wp config set DISABLE_WP_CRON true --raw 2>&1 | grep -v Deprecated || true
+    printf '# mwp: WP-Cron for %s\n*/5 * * * * %s wp --allow-root --path=%s cron event run --due-now > /dev/null 2>&1\n' \
+        "$DOMAIN" "$SITE_USER" "$WEB_ROOT" > "/etc/cron.d/mwp-wpcron-$(domain_to_slug "$DOMAIN")"
+    chmod 644 "/etc/cron.d/mwp-wpcron-$(domain_to_slug "$DOMAIN")"
+
+    log_sub "WordPress installed at ${WEB_ROOT}"
+}
+
+_site_issue_ssl_or_skip() {
+    # Check if domain resolves to this server
+    local server_ip expected_ip
+    server_ip="$(server_get SERVER_IP)"
+    expected_ip="$(dig +short "$DOMAIN" 2>/dev/null | tail -1)" || expected_ip=""
+
+    if [[ -n "$server_ip" && "$expected_ip" == "$server_ip" ]]; then
+        log_sub "DNS resolves to this server — issuing SSL..."
+        ssl_issue "$DOMAIN" || log_warn "SSL issue failed — run: mwp ssl issue $DOMAIN after DNS propagates"
+    else
+        log_sub "DNS not yet pointing to this server (got: ${expected_ip:-none}, expected: ${server_ip})"
+        log_sub "Skip SSL — run: mwp ssl issue $DOMAIN after DNS"
+    fi
+}
+
+_site_print_credentials() {
+    printf '\n'
+    printf '%b  ══════════════════════════════════════%b\n' "$GREEN" "$NC"
+    printf '%b  Site:      %b https://%s\n' "$BOLD" "$NC" "$DOMAIN"
+    printf '%b  WP Admin:  %b https://%s/wp-admin\n' "$BOLD" "$NC" "$DOMAIN"
+    printf '  Username:  %s\n' "$WP_ADMIN_USER"
+    printf '  Password:  %b%s%b\n' "$BOLD" "$WP_ADMIN_PASS" "$NC"
+    printf '  ──────────────────────────────────────\n'
+    printf '  DB Name:   %s\n' "$DB_NAME"
+    printf '  DB User:   %s\n' "$DB_USER"
+    printf '  DB Pass:   %s\n' "$DB_PASS"
+    printf '  Redis DB:  %s\n' "$REDIS_DB"
+    printf '  ──────────────────────────────────────\n'
+    printf '  PHP:       %s\n' "$PHP_VERSION"
+    printf '  Web Root:  %s\n' "$WEB_ROOT"
+    printf '  Cache:     %s\n' "$CACHE_PATH"
+    printf '%b  ══════════════════════════════════════%b\n\n' "$GREEN" "$NC"
+    printf '  %bManage:%b mwp site info %s\n\n' "$BOLD" "$NC" "$DOMAIN"
+}
+
+# ---------------------------------------------------------------------------
+# site_delete <domain>
+# ---------------------------------------------------------------------------
+site_delete() {
+    local domain="${1:-}"
+    [[ -z "$domain" ]] && die "Usage: mwp site delete <domain>"
+    site_exists "$domain" || die "Site '$domain' not found."
+
+    _load_site_deps
+
+    # Load site config
+    local site_user php_version web_root db_name db_user
+    site_user="$(site_get "$domain" SITE_USER)"
+    php_version="$(site_get "$domain" PHP_VERSION)"
+    web_root="$(site_get "$domain" WEB_ROOT)"
+    db_name="$(site_get "$domain" DB_NAME)"
+    db_user="$(site_get "$domain" DB_USER)"
+    local cron_slug
+    cron_slug="$(domain_to_slug "$domain")"
+
+    printf '\n%bDelete site: %s%b\n' "$RED" "$domain" "$NC"
+    printf 'This will:\n'
+    printf '  • Remove Nginx vhost\n'
+    printf '  • Remove PHP-FPM pool\n'
+    printf '  • Drop database: %s\n' "$db_name"
+    printf '  • Delete Linux user + home: /home/%s\n' "$site_user"
+    printf '  • Remove from registry\n\n'
+
+    confirm "Type 'y' to confirm deletion of $domain" || { log_info "Aborted."; return 0; }
+
+    log_info "Deleting site: $domain"
+
+    # 1. Nginx
+    nginx_delete_site "$domain" 2>/dev/null || true
+
+    # 2. PHP-FPM pool
+    php_delete_pool "$site_user" "$php_version" 2>/dev/null || true
+
+    # 3. Database
+    local root_pass
+    root_pass="$(server_get "DB_ROOT_PASS")"
+    if [[ -n "$root_pass" ]]; then
+        mysql -u root -p"${root_pass}" 2>/dev/null <<SQL || true
+DROP DATABASE IF EXISTS \`${db_name}\`;
+DROP USER IF EXISTS '${db_user}'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+        log_sub "Database '${db_name}' dropped"
+    fi
+
+    # 4. System user + home
+    if id "$site_user" &>/dev/null; then
+        userdel -r "$site_user" 2>/dev/null || true
+        log_sub "User '${site_user}' and home deleted"
+    fi
+
+    # 5. SSL certificate
+    certbot delete --cert-name "$domain" --non-interactive 2>/dev/null || true
+
+    # 6. Cron jobs
+    rm -f "/etc/cron.d/mwp-wpcron-${cron_slug}" 2>/dev/null || true
+
+    # 7. Registry
+    registry_remove "$domain"
+
+    log_success "Site '$domain' deleted."
+}
+
+# ---------------------------------------------------------------------------
+# site_disable / site_enable
+# ---------------------------------------------------------------------------
+site_disable() {
+    local domain="${1:-}"
+    [[ -z "$domain" ]] && die "Usage: mwp site disable <domain>"
+    site_exists "$domain" || die "Site '$domain' not found."
+
+    _load_site_deps
+    nginx_disable_site "$domain"
+    registry_set_status "$domain" "disabled"
+    log_success "Site '$domain' disabled."
+}
+
+site_enable() {
+    local domain="${1:-}"
+    [[ -z "$domain" ]] && die "Usage: mwp site enable <domain>"
+    site_exists "$domain" || die "Site '$domain' not found."
+
+    _load_site_deps
+    nginx_enable_site "$domain"
+    registry_set_status "$domain" "active"
+    log_success "Site '$domain' enabled."
+}

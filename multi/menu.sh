@@ -20,7 +20,7 @@ source "$MWP_DIR/lib/registry.sh"
 
 # Load per-site libs lazily
 _load_site_libs() {
-    for _lib in site php nginx ssl backup; do
+    for _lib in nginx php site ssl backup; do
         local f="$MWP_DIR/lib/multi-${_lib}.sh"
         [[ -f "$f" ]] && source "$f"
     done
