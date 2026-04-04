@@ -109,10 +109,9 @@ step_system_prep() {
     apt_install curl wget gnupg software-properties-common unzip git bc \
         htop ncdu logrotate apt-transport-https ca-certificates lsb-release
 
-    # Swap (if not exists)
+    # Swap (if not exists) — always 1GB regardless of RAM
     if ! swapon --show | grep -q '/'; then
         local swap_mb=1024
-        [[ $(detect_ram_mb) -lt 1024 ]] && swap_mb=512
         log_sub "Creating ${swap_mb}MB swap..."
         fallocate -l "${swap_mb}M" /swapfile 2>/dev/null || \
             dd if=/dev/zero of=/swapfile bs=1M count="$swap_mb" status=none
