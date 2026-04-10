@@ -7,14 +7,17 @@ _MWP_COMMON_LOADED=1
 
 # ---------------------------------------------------------------------------
 # Colors
+# ANSI-C quoting ($'\e...') stores the literal ESC byte in the variable so the
+# colors work everywhere — `printf '%s'`, `cat <<EOF`, and string concatenation.
+# Plain single-quoted '\033...' would only render correctly with `printf '%b'`.
 # ---------------------------------------------------------------------------
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-NC='\033[0m'
+RED=$'\e[0;31m'
+YELLOW=$'\e[1;33m'
+GREEN=$'\e[0;32m'
+CYAN=$'\e[0;36m'
+BOLD=$'\e[1m'
+DIM=$'\e[2m'
+NC=$'\e[0m'
 
 # ---------------------------------------------------------------------------
 # Constants
