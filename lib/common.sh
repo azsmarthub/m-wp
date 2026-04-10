@@ -337,3 +337,33 @@ detect_ip() {
         ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}' || \
         echo "unknown"
 }
+
+# ---------------------------------------------------------------------------
+# Cloudflare IP detection
+# Returns 0 (true) if the given IPv4 looks like a Cloudflare anycast IP.
+# Used to recognize CF-proxied domains where Let's Encrypt HTTP-01 challenge
+# will be blocked by CF Bot Mitigation (returns 403 with Cf-Mitigated header).
+# Source: https://www.cloudflare.com/ips-v4 — covers all major /16 prefixes.
+# ---------------------------------------------------------------------------
+is_cloudflare_ip() {
+    local ip="$1"
+    local first="${ip%%.*}"
+    local rest="${ip#*.}"
+    local second="${rest%%.*}"
+    case "${first}.${second}" in
+        104.16|104.17|104.18|104.19|104.20|104.21|104.22|104.23) return 0 ;;
+        104.24|104.25|104.26|104.27|104.28|104.29|104.30|104.31) return 0 ;;
+        172.64|172.65|172.66|172.67|172.68|172.69|172.70|172.71) return 0 ;;
+        162.158) return 0 ;;
+        103.21|103.22|103.31) return 0 ;;
+        108.162) return 0 ;;
+        131.0)   return 0 ;;
+        141.101) return 0 ;;
+        173.245) return 0 ;;
+        188.114) return 0 ;;
+        190.93)  return 0 ;;
+        197.234) return 0 ;;
+        198.41)  return 0 ;;
+    esac
+    return 1
+}

@@ -16,6 +16,16 @@ ssl_issue() {
     # Remove stale accounts that cause "Account not found" errors
     rm -rf /etc/letsencrypt/accounts/ 2>/dev/null || true
 
+    # Warn if domain is behind Cloudflare proxy — LE HTTP-01 will likely fail
+    # because CF Bot Mitigation returns 403 for /.well-known/acme-challenge/.
+    # We don't hard-block — user might have set up a Page Rule to allow it.
+    local apex_ip
+    apex_ip="$( set +o pipefail; dig +short "$domain" 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+    if [[ -n "$apex_ip" ]] && is_cloudflare_ip "$apex_ip"; then
+        log_warn "Domain is behind Cloudflare proxy (${apex_ip}) — LE HTTP-01 may fail."
+        log_warn "If it does, gray-cloud the DNS record temporarily, or use a CF Origin Cert."
+    fi
+
     # Detect if www subdomain has DNS pointing to this server.
     # If not, requesting it would (a) waste an LE rate-limit attempt and
     # (b) modify the cert SAN list — making the next renewal fail too.
