@@ -511,7 +511,10 @@ print_summary() {
     printf '%b  Server setup complete! (%dm %ds)%b\n' "$GREEN" "$((elapsed/60))" "$((elapsed%60))" "$NC"
     printf '%b═══════════════════════════════════════%b\n\n' "$GREEN" "$NC"
 
-    printf '%b  Stack:%b Nginx + PHP 8.3 + MariaDB + Redis\n' "$BOLD" "$NC"
+    local _php
+    _php="$(server_get DEFAULT_PHP 2>/dev/null)"
+    _php="${_php:-8.5}"
+    printf '%b  Stack:%b Nginx + PHP %s + MariaDB + Redis\n' "$BOLD" "$NC" "$_php"
     printf '%b  Next: %b mwp site create <domain>\n' "$BOLD" "$NC"
     printf '%b  Help: %b mwp help\n\n' "$BOLD" "$NC"
 }
