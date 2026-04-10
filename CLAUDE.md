@@ -5,8 +5,8 @@
 >
 > **Project:** `~/projects/m-wp`
 > **CLI command:** `mwp`
-> **Version:** 0.2.0 (Phase 1-3 complete)
-> **Last updated:** 2026-04-04
+> **Version:** 0.2.1 (Phase 1-4 complete — battle-tested on real VPS)
+> **Last updated:** 2026-04-10
 
 ---
 
@@ -226,7 +226,7 @@ mwp site enable/disable <domain> Enable/disable site
 mwp site shell  <domain>         Enter site user shell (bash)
 
 mwp php list                     List installed PHP versions
-mwp php install <version>        Install PHP 8.1/8.2/8.3/8.4
+mwp php install <version>        Install PHP 8.1/8.2/8.3/8.4/8.5
 mwp php switch  <domain> <ver>   Switch site PHP version
 
 mwp cache purge  <domain>        Purge FastCGI + Redis cache
@@ -267,14 +267,19 @@ mwp status <domain>              Single site status
 - [x] `templates/nginx/panel-placeholder.conf.tpl`
 - [x] `README.md`
 
-### 🔲 Phase 4 — Test trên VPS thật (NEXT)
-- [ ] Ubuntu 22.04, 1 CPU / 1GB RAM — fresh install
-- [ ] Test: install → create 2 sites → php switch → retune → backup/restore
-- [ ] Test: `mwp site check-isolation` → tất cả green
-- [ ] Fix bugs phát sinh
-- [ ] Push GitHub repo
+### ✅ Phase 4 — Test trên VPS thật (COMPLETE — 2026-04-10)
+- [x] Ubuntu 24.04 LTS — fresh install trên VPS demo (147.93.131.121)
+- [x] Test: install → create 2 sites → php switch 8.3↔8.2 → retune → backup → delete
+- [x] `mwp site check-isolation` → 10/10 pass
+- [x] HTTP 200 OK + FastCGI cache active verified
+- [x] **15 bug đã fix** (trước + trong VPS test). Bug chính: `set -euo pipefail` + pattern
+      `local x; x="$(cmd | grep ...)"` rất nguy hiểm — pipe SIGPIPE / no-match propagate
+      → set -e fire âm thầm. Fix: wrap trong subshell `( set +o pipefail; ... )`. Có 4
+      chỗ trong codebase.
+- [x] PHP 8.5 added as new default (Nov 2025 GA, ondrej PPA)
+- [x] Push GitHub repo + tag v0.2.1
 
-### 🔲 Phase 5 — Nameserver / PowerDNS
+### 🔲 Phase 5 — Nameserver / PowerDNS (NEXT)
 - [ ] `lib/multi-dns.sh` — cài PowerDNS + MySQL backend
 - [ ] ns1/ns2 hostname → domains trỏ NS về VPS này được phục vụ DNS
 - [ ] `mwp dns zone-add/del <domain>`
@@ -315,5 +320,6 @@ mwp status <domain>              Single site status
 - **OS target:** Ubuntu 24.04 LTS (only supported version)
 - **Min spec test:** 1 CPU / 1GB RAM + 1GB swap (auto-created)
 - **Recommended multi-site:** 1 CPU / 2GB RAM (3-5 sites)
-- **Stack:** Nginx mainline + PHP-FPM 8.3 (default) + MariaDB 11.4 LTS + Redis 7 + WP-CLI
+- **Stack:** Nginx mainline + PHP-FPM 8.5 (default, ondrej PPA) + MariaDB 11.4 LTS + Redis 7 + WP-CLI
+- **Multi PHP:** `mwp php install 8.1|8.2|8.3|8.4|8.5` — site có thể chọn version riêng qua `mwp php switch`
 - **Install path:** `/opt/m-wp` (hoặc bất kỳ đâu, MWP_DIR tự detect qua symlink)

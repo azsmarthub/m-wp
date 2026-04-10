@@ -211,7 +211,7 @@ NGINXCONF
 }
 
 step_php() {
-    local default_php="8.3"
+    local default_php="8.5"
 
     if ! command -v php >/dev/null 2>&1; then
         log_sub "Adding PHP PPA (ondrej/php)..."
@@ -524,7 +524,7 @@ main() {
 
     run_step 1 10 "System preparation"    step_system_prep
     run_step 2 10 "Installing Nginx"      step_nginx
-    run_step 3 10 "Installing PHP 8.3"    step_php
+    run_step 3 10 "Installing PHP 8.5"    step_php
     run_step 4 10 "Installing MariaDB"    step_mariadb
     run_step 5 10 "Installing Redis"      step_redis
     run_step 6 10 "Installing WP-CLI"     step_wpcli

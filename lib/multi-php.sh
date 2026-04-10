@@ -13,7 +13,7 @@ php_list_versions() {
     printf '\n%bInstalled PHP versions:%b\n' "$BOLD" "$NC"
     local found=0
     local ver
-    for ver in 8.1 8.2 8.3 8.4; do
+    for ver in 8.1 8.2 8.3 8.4 8.5; do
         if command -v "php${ver}" >/dev/null 2>&1; then
             local fpm_status="inactive"
             systemctl is-active --quiet "php${ver}-fpm" 2>/dev/null && fpm_status="active"
@@ -34,8 +34,8 @@ php_install_version() {
 
     # Validate
     case "$version" in
-        8.1|8.2|8.3|8.4) ;;
-        *) die "Unsupported PHP version: $version. Supported: 8.1 8.2 8.3 8.4" ;;
+        8.1|8.2|8.3|8.4|8.5) ;;
+        *) die "Unsupported PHP version: $version. Supported: 8.1 8.2 8.3 8.4 8.5" ;;
     esac
 
     if command -v "php${version}" >/dev/null 2>&1; then
@@ -134,7 +134,7 @@ php_switch_site() {
     site_exists "$domain" || die "Site '$domain' not found."
 
     case "$new_version" in
-        8.1|8.2|8.3|8.4) ;;
+        8.1|8.2|8.3|8.4|8.5) ;;
         *) die "Unsupported PHP version: $new_version" ;;
     esac
 

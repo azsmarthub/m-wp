@@ -57,7 +57,7 @@ ${BOLD}Site management:${NC}
 
 ${BOLD}PHP:${NC}
   mwp php list                     List installed PHP versions
-  mwp php install <version>        Install PHP version (8.1/8.2/8.3/8.4)
+  mwp php install <version>        Install PHP version (8.1/8.2/8.3/8.4/8.5)
   mwp php switch  <domain> <ver>   Switch site PHP version
 
 ${BOLD}Cache:${NC}

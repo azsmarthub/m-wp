@@ -335,7 +335,7 @@ _menu_php_switch() {
     php_list_versions
     _mhr
     printf '  Current: PHP %s\n' "$_cur"
-    printf '  New version (8.1 / 8.2 / 8.3 / 8.4 — or ENTER to cancel): '
+    printf '  New version (8.1 / 8.2 / 8.3 / 8.4 / 8.5 — or ENTER to cancel): '
     read -r _new_ver
 
     if [[ -n "$_new_ver" && "$_new_ver" != "$_cur" ]]; then
@@ -457,7 +457,7 @@ menu_php() {
 
     case "$MENU_INPUT" in
         i|install)
-            printf '  Version to install (8.1 / 8.2 / 8.3 / 8.4): '
+            printf '  Version to install (8.1 / 8.2 / 8.3 / 8.4 / 8.5): '
             read -r _ver
             if [[ -n "$_ver" ]]; then
                 require_root; php_install_version "$_ver" || true; _mpause
