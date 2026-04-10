@@ -142,8 +142,9 @@ isolation_check() {
         db_grants="$(mysql -u root -p"${root_pass}" -se \
             "SHOW GRANTS FOR '${db_user}'@'localhost';" 2>/dev/null || echo '')"
         if echo "$db_grants" | grep -q "${db_name}"; then
-            # Check it's not GRANT ALL ON *.*
-            if echo "$db_grants" | grep -qE "GRANT .* ON \*\.\*"; then
+            # Flag global privileges, but ignore the harmless "GRANT USAGE ON *.*"
+            # which MariaDB always emits for any user (it just means "can login").
+            if echo "$db_grants" | grep -E "ON \*\.\*" | grep -qvE "GRANT USAGE ON"; then
                 printf '  %b✗%b  %-35s has global privileges!\n' "$RED" "$NC" "MariaDB grants"
                 fail=$(( fail + 1 ))
             else
