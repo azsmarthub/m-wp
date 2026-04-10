@@ -117,12 +117,17 @@ confirm() {
 # ---------------------------------------------------------------------------
 generate_password() {
     local length="${1:-24}"
-    # Run in a subshell with pipefail OFF so SIGPIPE from `head` closing the
-    # pipe doesn't cascade and make the function fall through to the fallback
-    # (which used to concatenate output and return double-length passwords).
+    # Charset: alphanumeric only — must be safe to embed inside unquoted shell
+    # heredocs (<<SQL ... SQL) and `mysql -p"$pass"` invocations without any
+    # escaping. Special chars like $ & * \ ' " would get expanded/eaten by
+    # bash before reaching mysql, producing a stored password that doesn't
+    # match what we save in server.conf. 62^32 ≈ 190 bits — still very strong.
+    #
+    # Subshell + `set +o pipefail` so that head closing the pipe (SIGPIPE on
+    # tr) doesn't make the whole pipeline non-zero under callers' pipefail.
     (
         set +o pipefail
-        LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom 2>/dev/null | head -c "$length"
+        LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$length"
     )
 }
 
