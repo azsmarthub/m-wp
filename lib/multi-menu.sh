@@ -40,11 +40,12 @@ _mprompt() {
 _mheader() {
     local subtitle="${1:-}"
     local _ip _ram _cpu _cnt _def_php _svc _lbl
-    _ip="$(server_get SERVER_IP 2>/dev/null || detect_ip)"
+    _ip="$(server_get SERVER_IP 2>/dev/null)"; [[ -z "$_ip" ]] && _ip="$(detect_ip)"
     _ram="$(detect_ram_mb)"
     _cpu="$(detect_cpu_cores)"
     _cnt="$(site_count)"
-    _def_php="$(server_get DEFAULT_PHP 2>/dev/null || printf '8.3')"
+    _def_php="$(server_get DEFAULT_PHP 2>/dev/null)"
+    [[ -z "$_def_php" ]] && _def_php="8.5"
 
     _mc
     _mhr2
@@ -75,8 +76,12 @@ _mheader() {
 
 _ssl_icon() {
     local _dom="$1"
-    local _cert="/etc/letsencrypt/live/${_dom}/fullchain.pem"
-    [[ ! -f "$_cert" ]] && printf '✗' && return
+    local _cert=""
+    # Check both LE and self-signed locations
+    [[ -f "/etc/letsencrypt/live/${_dom}/fullchain.pem" ]] && _cert="/etc/letsencrypt/live/${_dom}/fullchain.pem"
+    [[ -f "/etc/mwp/ssl/${_dom}/fullchain.pem"          ]] && _cert="/etc/mwp/ssl/${_dom}/fullchain.pem"
+    [[ -z "$_cert" ]] && printf '✗' && return
+
     local _exp _now
     _exp="$(openssl x509 -enddate -noout -in "$_cert" 2>/dev/null \
             | cut -d= -f2 | xargs -I{} date -d '{}' +%s 2>/dev/null)" || _exp=0
@@ -407,14 +412,22 @@ _menu_do_restore() {
 
 _menu_do_ssl() {
     local domain="$1"
-    local _cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+    local _cert="" _type="none"
+    if [[ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]]; then
+        _cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+        _type="Let's Encrypt"
+    elif [[ -f "/etc/mwp/ssl/${domain}/fullchain.pem" ]]; then
+        _cert="/etc/mwp/ssl/${domain}/fullchain.pem"
+        _type="self-signed (Cloudflare)"
+    fi
     local _exp
 
     _mc
     printf '\n  %bSSL — %s%b\n' "$BOLD" "$domain" "$NC"
     _mhr
-    if [[ -f "$_cert" ]]; then
+    if [[ -n "$_cert" ]]; then
         _exp="$(openssl x509 -enddate -noout -in "$_cert" 2>/dev/null | cut -d= -f2)"
+        printf '  Type:         %s\n' "$_type"
         printf '  Certificate:  %b✔ Active%b\n' "$GREEN" "$NC"
         printf '  Expires:      %s\n' "$_exp"
     else
@@ -484,22 +497,29 @@ menu_php() {
 # ──────────────────────────────────────────────────────────────────────
 
 menu_ssl_list() {
-    local _conf _d _cert _exp _sel
+    local _conf _d _cert _exp _type _sel
     _mheader "SSL Certificates"
     printf '\n'
-    printf '  %b%-30s  %-4s  %s%b\n' "$BOLD" "DOMAIN" "SSL" "EXPIRY" "$NC"
+    printf '  %b%-30s  %-12s  %-4s  %s%b\n' "$BOLD" "DOMAIN" "TYPE" "SSL" "EXPIRY" "$NC"
     _mhr
 
     if ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
         for _conf in "$MWP_SITES_DIR"/*.conf; do
             [[ -f "$_conf" ]] || continue
             _d="$(grep "^DOMAIN=" "$_conf" | cut -d= -f2-)"
-            _cert="/etc/letsencrypt/live/${_d}/fullchain.pem"
-            if [[ -f "$_cert" ]]; then
+            _cert=""; _type="—"
+            if [[ -f "/etc/letsencrypt/live/${_d}/fullchain.pem" ]]; then
+                _cert="/etc/letsencrypt/live/${_d}/fullchain.pem"
+                _type="letsencrypt"
+            elif [[ -f "/etc/mwp/ssl/${_d}/fullchain.pem" ]]; then
+                _cert="/etc/mwp/ssl/${_d}/fullchain.pem"
+                _type="self-signed"
+            fi
+            if [[ -n "$_cert" ]]; then
                 _exp="$(openssl x509 -enddate -noout -in "$_cert" 2>/dev/null | cut -d= -f2)"
-                printf '  %-30s  %b✔%b   %s\n' "$_d" "$GREEN" "$NC" "$_exp"
+                printf '  %-30s  %-12s  %b✔%b   %s\n' "$_d" "$_type" "$GREEN" "$NC" "$_exp"
             else
-                printf '  %-30s  %b✗%b   —\n' "$_d" "$RED" "$NC"
+                printf '  %-30s  %-12s  %b✗%b   —\n' "$_d" "—" "$RED" "$NC"
             fi
         done
     fi
@@ -599,7 +619,7 @@ menu_server() {
     case "$MENU_INPUT" in
         1)
             _mc
-            _ip="$(server_get SERVER_IP 2>/dev/null || detect_ip)"
+            _ip="$(server_get SERVER_IP 2>/dev/null)"; [[ -z "$_ip" ]] && _ip="$(detect_ip)"
             _ram="$(detect_ram_mb)"
             _cpu="$(detect_cpu_cores)"
             printf '\n  %bServer%b\n' "$BOLD" "$NC"; _mhr
@@ -633,7 +653,8 @@ menu_server() {
 
 menu_settings() {
     local _pd _new_pd
-    _pd="$(server_get PANEL_DOMAIN 2>/dev/null || printf '(not configured)')"
+    _pd="$(server_get PANEL_DOMAIN 2>/dev/null)"
+    [[ -z "$_pd" ]] && _pd="(not configured)"
 
     _mheader "Settings"
     printf '\n'
