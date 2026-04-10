@@ -90,11 +90,15 @@ site_create() {
     source "$MWP_DIR/lib/multi-isolation.sh"
     isolation_site_apply "$site_user" "$web_root"
 
-    log_step 7 $total "Issuing SSL certificate"
-    _site_issue_ssl_or_skip
-
-    log_step 8 $total "Registering site"
+    # Register BEFORE SSL — nginx_enable_https() reads site config via site_get,
+    # which would return empty values if the site isn't registered yet, producing
+    # an invalid vhost (`root ;`) and breaking nginx -t. If SSL then fails the
+    # site is still registered cleanly and the user can retry `mwp ssl issue`.
+    log_step 7 $total "Registering site"
     registry_add "$domain"
+
+    log_step 8 $total "Issuing SSL certificate"
+    _site_issue_ssl_or_skip
 
     log_step 9 $total "Auto-retune FPM pools"
     source "$MWP_DIR/lib/multi-tuning.sh"

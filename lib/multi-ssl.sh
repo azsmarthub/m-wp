@@ -16,23 +16,29 @@ ssl_issue() {
     # Remove stale accounts that cause "Account not found" errors
     rm -rf /etc/letsencrypt/accounts/ 2>/dev/null || true
 
-    log_sub "Requesting certificate for ${domain} (and www.${domain})..."
-    certbot certonly \
-        --nginx \
-        --non-interactive \
-        --agree-tos \
-        --email "admin@${domain}" \
-        -d "$domain" \
-        -d "www.${domain}" \
-        --redirect 2>&1 | tail -5 || \
-    certbot certonly \
-        --nginx \
-        --non-interactive \
-        --agree-tos \
-        --email "admin@${domain}" \
-        -d "$domain" \
-        --redirect 2>&1 | tail -5 || \
+    # Detect if www subdomain has DNS pointing to this server.
+    # If not, requesting it would (a) waste an LE rate-limit attempt and
+    # (b) modify the cert SAN list — making the next renewal fail too.
+    local server_ip www_ip include_www=0
+    server_ip="$(server_get "SERVER_IP")"
+    www_ip="$( set +o pipefail; dig +short "www.${domain}" 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+    if [[ -n "$server_ip" && -n "$www_ip" && "$www_ip" == "$server_ip" ]]; then
+        include_www=1
+        log_sub "www.${domain} DNS resolves here too — including in cert"
+    else
+        log_sub "www.${domain} DNS not pointing here (skipping to save LE rate limit)"
+    fi
+
+    local certbot_args=(
+        certonly --nginx --non-interactive --agree-tos
+        --email "admin@${domain}" -d "$domain"
+    )
+    [[ $include_www -eq 1 ]] && certbot_args+=( -d "www.${domain}" )
+
+    log_sub "Requesting certificate for ${domain}..."
+    if ! "${certbot_args[@]}" 2>&1 | tail -10; then
         die "Certbot failed. Check DNS propagation and retry: mwp ssl issue $domain"
+    fi
 
     # Update Nginx vhost with HTTPS block
     [[ -f "$MWP_DIR/lib/multi-nginx.sh" ]] && source "$MWP_DIR/lib/multi-nginx.sh"
