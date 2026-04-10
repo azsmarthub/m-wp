@@ -211,41 +211,10 @@ _site_install_wordpress() {
 }
 
 _site_issue_ssl_or_skip() {
-    local server_ip expected_ip
-    server_ip="$(server_get "SERVER_IP")"
-
-    # DNS lookup — prefer dig, fallback to getent/nslookup.
-    # Wrap pipelines in subshell with pipefail OFF; otherwise grep finding
-    # no match (or SIGPIPE from tail/head) makes the assignment trip set -e.
-    if command -v dig >/dev/null 2>&1; then
-        expected_ip="$( set +o pipefail; dig +short "$DOMAIN" 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
-    elif command -v getent >/dev/null 2>&1; then
-        expected_ip="$( set +o pipefail; getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1 )"
-    else
-        expected_ip=""
-    fi
-
-    if [[ -n "$server_ip" && -n "$expected_ip" && "$expected_ip" == "$server_ip" ]]; then
-        log_sub "DNS resolves to this server — issuing SSL..."
-        source "$MWP_DIR/lib/multi-ssl.sh"
-        ssl_issue "$DOMAIN" || log_warn "SSL failed — run: mwp ssl issue $DOMAIN"
-    elif [[ -n "$expected_ip" ]] && is_cloudflare_ip "$expected_ip"; then
-        log_sub "Domain is behind Cloudflare proxy (DNS → ${expected_ip})"
-        log_sub "Skipping Let's Encrypt — CF Bot Mitigation blocks the HTTP-01 challenge."
-        log_sub ""
-        log_sub "  Options for SSL on Cloudflare-proxied domains:"
-        log_sub "    1. Use a Cloudflare Origin Certificate (free, 15-year, recommended):"
-        log_sub "       CF dashboard → SSL/TLS → Origin Server → Create Certificate"
-        log_sub "       Then install on origin and set CF SSL mode to 'Full (strict)'."
-        log_sub "    2. Temporarily gray-cloud the DNS record, then run:"
-        log_sub "         mwp ssl issue $DOMAIN"
-        log_sub "       and re-enable the proxy after the cert is issued."
-        log_sub "    3. Use a CF Page Rule to bypass security on:"
-        log_sub "         http://*${DOMAIN}/.well-known/acme-challenge/*"
-    else
-        log_sub "DNS not pointing here yet (resolved: ${expected_ip:-none}, this server: ${server_ip:-unknown})"
-        log_sub "Skipping SSL — run after DNS propagates: mwp ssl issue $DOMAIN"
-    fi
+    # Smart wrapper in lib/multi-ssl.sh handles DNS detection + picks LE
+    # (direct DNS) or self-signed (Cloudflare proxy) automatically.
+    source "$MWP_DIR/lib/multi-ssl.sh"
+    ssl_issue "$DOMAIN" || log_warn "SSL setup failed — site is up on HTTP only. Retry: mwp ssl issue $DOMAIN"
 }
 
 _site_print_credentials() {

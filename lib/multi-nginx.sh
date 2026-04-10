@@ -87,6 +87,7 @@ nginx_delete_site() {
 # ---------------------------------------------------------------------------
 nginx_enable_https() {
     local domain="$1"
+    local cert_dir="${2:-/etc/letsencrypt/live/${domain}}"  # default = LE path
     local conf="$NGINX_SITES_AVAILABLE/${domain}.conf"
 
     [[ -f "$conf" ]] || die "Nginx config not found for $domain"
@@ -94,15 +95,24 @@ nginx_enable_https() {
     # Uncomment the return 301 line, comment out the placeholder comment
     sed -i 's|# return 301 https://\$host\$request_uri;|return 301 https://$host$request_uri;|' "$conf"
 
-    # Add HTTPS server block if not present
-    if ! grep -q "listen 443" "$conf"; then
-        local site_user php_version web_root cache_path
-        site_user="$(site_get "$domain" SITE_USER)"
-        php_version="$(site_get "$domain" PHP_VERSION)"
-        web_root="$(site_get "$domain" WEB_ROOT)"
-        cache_path="$(site_get "$domain" CACHE_PATH)"
+    # If HTTPS block already exists, just update cert paths (for switching
+    # between LE and self-signed without rewriting the whole vhost).
+    if grep -q "listen 443" "$conf"; then
+        sed -i "s|ssl_certificate     .*/fullchain.pem;|ssl_certificate     ${cert_dir}/fullchain.pem;|" "$conf"
+        sed -i "s|ssl_certificate_key .*/privkey.pem;|ssl_certificate_key ${cert_dir}/privkey.pem;|"     "$conf"
+        log_sub "Updated cert paths in existing HTTPS block → ${cert_dir}/"
+        nginx_reload
+        return 0
+    fi
 
-        cat >> "$conf" <<HTTPS_BLOCK
+    # Add HTTPS server block (first time)
+    local site_user php_version web_root cache_path
+    site_user="$(site_get "$domain" SITE_USER)"
+    php_version="$(site_get "$domain" PHP_VERSION)"
+    web_root="$(site_get "$domain" WEB_ROOT)"
+    cache_path="$(site_get "$domain" CACHE_PATH)"
+
+    cat >> "$conf" <<HTTPS_BLOCK
 
 server {
     listen 443 ssl;
@@ -110,8 +120,8 @@ server {
     http2 on;
     server_name ${domain} www.${domain};
 
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    ssl_certificate     ${cert_dir}/fullchain.pem;
+    ssl_certificate_key ${cert_dir}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
@@ -165,10 +175,9 @@ server {
     location ~* /(wp-config\.php|xmlrpc\.php) { deny all; }
 }
 HTTPS_BLOCK
-    fi
 
     nginx_reload
-    log_sub "HTTPS enabled for $domain"
+    log_sub "HTTPS enabled for $domain (cert: ${cert_dir})"
 }
 
 # ---------------------------------------------------------------------------
