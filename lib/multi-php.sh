@@ -4,7 +4,7 @@
 [[ -n "${_MWP_PHP_LOADED:-}" ]] && return 0
 _MWP_PHP_LOADED=1
 
-MWP_PHP_EXTENSIONS="fpm mysql redis curl gd mbstring xml zip intl bcmath imagick soap"
+MWP_PHP_EXTENSIONS="fpm cli mysql redis curl gd mbstring xml zip intl bcmath imagick soap"
 
 # ---------------------------------------------------------------------------
 # List installed PHP versions
@@ -89,15 +89,17 @@ php_create_pool() {
 
     [[ -d "$pool_dir" ]] || die "PHP ${PHP_VERSION} not installed (pool dir missing: $pool_dir)"
 
-    # Calculate pm.max_children based on available RAM and site count
-    local ram_mb site_count pm_children
+    # Calculate pm.max_children + memory_limit
+    # Single source of truth: tuning_calc_* in lib/multi-tuning.sh
+    [[ -z "${_MWP_TUNING_LOADED:-}" ]] && source "$MWP_DIR/lib/multi-tuning.sh"
+
+    local ram_mb site_count
     ram_mb="$(detect_ram_mb)"
     site_count="$(site_count)"
     site_count=$(( site_count + 1 ))   # include the site being created
-    pm_children="$(php_calc_pm_children "$ram_mb" "$site_count")"
 
-    PHP_MEMORY_LIMIT="$(php_calc_memory_limit "$ram_mb" "$site_count")"
-    PM_MAX_CHILDREN="$pm_children"
+    PM_MAX_CHILDREN="$(tuning_calc_children "$ram_mb" "$site_count")"
+    PHP_MEMORY_LIMIT="$(tuning_calc_memory   "$ram_mb" "$site_count")"
     GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 
     render_template "$MWP_DIR/templates/php/multi-pool.conf.tpl" > "$pool_file"
@@ -173,27 +175,5 @@ php_switch_site() {
 }
 
 # ---------------------------------------------------------------------------
-# Calculate pm.max_children
-# Simple formula: (available RAM - 256MB reserve) / site_count / 30MB per child
+# (Calculation helpers moved to lib/multi-tuning.sh — single source of truth)
 # ---------------------------------------------------------------------------
-php_calc_pm_children() {
-    local ram_mb="$1" site_count="$2"
-    local available=$(( ram_mb - 256 ))
-    [[ $available -lt 128 ]] && available=128
-    local per_site=$(( available / site_count ))
-    local children=$(( per_site / 30 ))
-    [[ $children -lt 2 ]] && children=2
-    [[ $children -gt 12 ]] && children=12
-    printf '%d' "$children"
-}
-
-# ---------------------------------------------------------------------------
-# Calculate memory_limit per site
-# ---------------------------------------------------------------------------
-php_calc_memory_limit() {
-    local ram_mb="$1" site_count="$2"
-    local limit=$(( (ram_mb - 256) / site_count ))
-    [[ $limit -lt 64 ]] && limit=64
-    [[ $limit -gt 512 ]] && limit=512
-    printf '%d' "$limit"
-}

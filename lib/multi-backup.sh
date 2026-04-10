@@ -33,7 +33,8 @@ backup_site() {
             # 1. Dump DB
             local db_dump="/tmp/mwp-db-${domain}-${timestamp}.sql"
             log_sub "Dumping database..."
-            mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$db_dump" 2>/dev/null || \
+            mysqldump --single-transaction --quick --skip-lock-tables \
+                -u "$db_user" -p"$db_pass" "$db_name" > "$db_dump" 2>/dev/null || \
                 die "mysqldump failed for $db_name"
 
             # 2. Archive files + db dump
@@ -49,7 +50,8 @@ backup_site() {
         db)
             archive="${backup_dir}/${domain}-db-${timestamp}.sql.gz"
             log_sub "Dumping database..."
-            mysqldump -u "$db_user" -p"$db_pass" "$db_name" 2>/dev/null | \
+            mysqldump --single-transaction --quick --skip-lock-tables \
+                -u "$db_user" -p"$db_pass" "$db_name" 2>/dev/null | \
                 gzip > "$archive" || die "Database dump failed"
             ;;
 

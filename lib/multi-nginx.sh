@@ -30,8 +30,18 @@ nginx_create_site() {
     GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
     render_template "$MWP_DIR/templates/nginx/multi-site.conf.tpl" > "$conf_file"
 
-    nginx_enable_site "$domain"
-    log_sub "Nginx vhost created: $conf_file"
+    # Symlink without reload — restart will pick up vhost AND new group membership
+    ln -sf "$conf_file" "$NGINX_SITES_ENABLED/${domain}.conf"
+
+    # IMPORTANT: full restart, not reload.
+    # _site_create_user just ran `usermod -aG <slug> www-data` to add www-data
+    # to the new site group. SIGHUP (reload) does NOT re-evaluate supplementary
+    # groups of the master process — only a fresh start does. Without restart,
+    # nginx workers can't read static files in /home/<slug>/<domain>/ (chmod 750)
+    # and serve 403 for CSS/JS/images.
+    nginx_test
+    systemctl restart nginx || die "nginx restart failed"
+    log_sub "Nginx vhost created + restarted: $conf_file"
 }
 
 # ---------------------------------------------------------------------------

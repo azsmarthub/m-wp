@@ -38,6 +38,18 @@ ssl_issue() {
     [[ -f "$MWP_DIR/lib/multi-nginx.sh" ]] && source "$MWP_DIR/lib/multi-nginx.sh"
     nginx_enable_https "$domain"
 
+    # Update WordPress siteurl/home to https (only if site is registered)
+    if site_exists "$domain"; then
+        local site_user web_root
+        site_user="$(site_get "$domain" SITE_USER)"
+        web_root="$(site_get "$domain" WEB_ROOT)"
+        if [[ -n "$site_user" && -d "$web_root" ]] && command -v wp >/dev/null 2>&1; then
+            sudo -u "$site_user" wp --path="$web_root" option update home "https://${domain}" 2>/dev/null || true
+            sudo -u "$site_user" wp --path="$web_root" option update siteurl "https://${domain}" 2>/dev/null || true
+            log_sub "WordPress home/siteurl updated → https://${domain}"
+        fi
+    fi
+
     # Update registry
     site_set "$domain" "SSL_ENABLED" "yes"
     site_set "$domain" "SSL_ISSUED_AT" "$(date '+%Y-%m-%d')"

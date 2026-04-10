@@ -336,8 +336,11 @@ main() {
                     ;;
                 setup)
                     require_root
-                    source "$MWP_DIR/multi/install.sh" 2>/dev/null || true
-                    step_panel_url
+                    # Source install.sh — main() is guarded by BASH_SOURCE check, so safe.
+                    # shellcheck source=/dev/null
+                    source "$MWP_DIR/multi/install.sh"
+                    step_panel_url_collect
+                    step_panel_url_apply
                     ;;
                 ssl)
                     require_root

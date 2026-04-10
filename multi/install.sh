@@ -223,6 +223,7 @@ step_php() {
     log_sub "Installing PHP ${default_php} + extensions..."
     apt_install \
         "php${default_php}-fpm" \
+        "php${default_php}-cli" \
         "php${default_php}-mysql" \
         "php${default_php}-redis" \
         "php${default_php}-curl" \
@@ -395,11 +396,8 @@ step_isolation() {
     isolation_global_apply
 }
 
-step_panel_url() {
-    local server_ip
-    server_ip="$(detect_ip)"
-
-    # Ask for panel hostname (optional — can skip)
+# Phase 1: collect input only (called BEFORE nginx is installed)
+step_panel_url_collect() {
     local panel_domain=""
     printf '\n%b  Panel URL setup (optional)%b\n' "$BOLD" "$NC"
     printf '  This sets a dedicated hostname for the mwp web UI (future).\n'
@@ -409,13 +407,27 @@ step_panel_url() {
     read -r panel_domain
 
     if [[ -n "$panel_domain" ]]; then
-        validate_domain "$panel_domain" || { log_warn "Invalid domain — skipping panel URL setup."; return 0; }
+        if validate_domain "$panel_domain"; then
+            server_set "PANEL_DOMAIN" "$panel_domain"
+            log_sub "Panel hostname saved: $panel_domain (vhost will be created after Nginx install)"
+        else
+            log_warn "Invalid domain — skipping panel URL setup."
+        fi
+    fi
+}
 
-        server_set "PANEL_DOMAIN" "$panel_domain"
+# Phase 2: render vhost (called AFTER nginx is installed)
+step_panel_url_apply() {
+    local panel_domain
+    panel_domain="$(server_get "PANEL_DOMAIN")"
+    [[ -z "$panel_domain" ]] && { log_sub "Panel URL skipped — run 'mwp panel setup' later."; return 0; }
 
-        # Create placeholder web root
-        mkdir -p /var/www/mwp-panel
-        cat > /var/www/mwp-panel/index.html <<HTML
+    local server_ip
+    server_ip="$(detect_ip)"
+
+    # Create placeholder web root
+    mkdir -p /var/www/mwp-panel
+    cat > /var/www/mwp-panel/index.html <<HTML
 <!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>mwp Panel</title>
@@ -430,19 +442,16 @@ h1{color:#4ade80;font-size:1.5rem;}p{color:#888;}</style></head>
 </div></body></html>
 HTML
 
-        # Create Nginx vhost for panel domain
-        local panel_conf="/etc/nginx/sites-available/mwp-panel.conf"
-        PANEL_DOMAIN="$panel_domain" \
-        GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
-        render_template "$MWP_DIR/templates/nginx/panel-placeholder.conf.tpl" > "$panel_conf"
+    # Create Nginx vhost for panel domain
+    local panel_conf="/etc/nginx/sites-available/mwp-panel.conf"
+    PANEL_DOMAIN="$panel_domain" \
+    GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
+    render_template "$MWP_DIR/templates/nginx/panel-placeholder.conf.tpl" > "$panel_conf"
 
-        ln -sf "$panel_conf" /etc/nginx/sites-enabled/mwp-panel.conf
-        nginx -t 2>/dev/null && systemctl reload nginx
-        log_success "Panel URL configured: http://${panel_domain}"
-        log_sub "Issue SSL later: mwp ssl issue ${panel_domain}"
-    else
-        log_sub "Panel URL skipped — run 'mwp panel setup' later to configure."
-    fi
+    ln -sf "$panel_conf" /etc/nginx/sites-enabled/mwp-panel.conf
+    nginx -t 2>/dev/null && systemctl reload nginx
+    log_success "Panel URL configured: http://${panel_domain}"
+    log_sub "Issue SSL later: mwp ssl issue ${panel_domain}"
 }
 
 step_cli() {
@@ -480,25 +489,30 @@ main() {
     preflight_checks
 
     # Collect optional inputs BEFORE automated steps (no interruptions mid-install)
-    step_panel_url
+    step_panel_url_collect
 
     confirm "Start server setup?" || exit 0
 
     local start_time
     start_time="$(date +%s)"
 
-    run_step 1 9 "System preparation"    step_system_prep
-    run_step 2 9 "Installing Nginx"      step_nginx
-    run_step 3 9 "Installing PHP 8.3"    step_php
-    run_step 4 9 "Installing MariaDB"    step_mariadb
-    run_step 5 9 "Installing Redis"      step_redis
-    run_step 6 9 "Installing WP-CLI"     step_wpcli
-    run_step 7 9 "Installing Certbot"    step_certbot
-    run_step 8 9 "Firewall + Fail2ban"   step_firewall
-    run_step 9 9 "Isolation hardening"   step_isolation
+    run_step 1 10 "System preparation"    step_system_prep
+    run_step 2 10 "Installing Nginx"      step_nginx
+    run_step 3 10 "Installing PHP 8.3"    step_php
+    run_step 4 10 "Installing MariaDB"    step_mariadb
+    run_step 5 10 "Installing Redis"      step_redis
+    run_step 6 10 "Installing WP-CLI"     step_wpcli
+    run_step 7 10 "Installing Certbot"    step_certbot
+    run_step 8 10 "Firewall + Fail2ban"   step_firewall
+    run_step 9 10 "Isolation hardening"   step_isolation
+    run_step 10 10 "Panel URL setup"      step_panel_url_apply
     step_cli
 
     print_summary "$start_time"
 }
 
-main "$@"
+# Only run main when executed directly, not when sourced
+# (mwp panel setup sources this file to reuse step_panel_url_apply)
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

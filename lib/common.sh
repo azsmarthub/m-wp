@@ -259,8 +259,17 @@ apt_wait() {
 
 apt_install() {
     apt_wait
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$@" 2>&1 | \
-        grep -E "^(Setting up|Unpacking|Get:|Fetched)" | tail -5 || true
+    local log_file="/tmp/mwp-apt-$$.log"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$@" >"$log_file" 2>&1
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log_error "apt-get install failed (rc=$rc) for: $*"
+        log_error "Last 20 lines of apt log ($log_file):"
+        tail -20 "$log_file" >&2 || true
+        die "apt install aborted — see $log_file for full output"
+    fi
+    grep -E "^(Setting up|Unpacking)" "$log_file" | tail -5 || true
+    rm -f "$log_file"
 }
 
 # ---------------------------------------------------------------------------
