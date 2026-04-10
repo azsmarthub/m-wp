@@ -246,12 +246,7 @@ cmd_ssl() {
     case "$sub" in
         issue)  require_root; ssl_issue "${1:-}" ;;
         renew)  require_root; certbot renew --quiet ;;
-        status)
-            local domain="${1:-}"
-            site_exists "$domain" || die "Site '$domain' not found."
-            echo | openssl s_client -connect "${domain}:443" -servername "$domain" 2>/dev/null \
-                | openssl x509 -noout -dates 2>/dev/null || log_warn "No SSL found for $domain"
-            ;;
+        status)  ssl_status "${1:-}" ;;
         *) cmd_help; die "Unknown ssl subcommand: $sub" ;;
     esac
 }

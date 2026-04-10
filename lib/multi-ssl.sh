@@ -157,8 +157,63 @@ ssl_issue_self_signed() {
 }
 
 # ---------------------------------------------------------------------------
-# After cert is in place: update WordPress home/siteurl to https
+# Show SSL status for a site — origin cert + public TLS view (if reachable).
+# IMPORTANT: when the site is behind Cloudflare, `openssl s_client -connect`
+# would return the CF edge certificate, not our origin cert. So we always
+# read the local cert file first (the one nginx is actually using) and
+# label the public check as "visitor view" so the user understands the
+# difference.
 # ---------------------------------------------------------------------------
+ssl_status() {
+    local domain="${1:-}"
+    [[ -z "$domain" ]] && die "Usage: mwp ssl status <domain>"
+    site_exists "$domain" || die "Site '$domain' not found."
+
+    local ssl_type cert_file
+    ssl_type="$(site_get "$domain" SSL_ENABLED)"
+
+    case "$ssl_type" in
+        letsencrypt|yes)
+            cert_file="/etc/letsencrypt/live/${domain}/fullchain.pem"
+            ssl_type="letsencrypt"
+            ;;
+        self-signed)
+            cert_file="/etc/mwp/ssl/${domain}/fullchain.pem"
+            ;;
+        *)
+            log_warn "No SSL configured for $domain (SSL_ENABLED=${ssl_type:-none})"
+            log_sub  "Run: mwp ssl issue $domain"
+            return 0
+            ;;
+    esac
+
+    printf '\n%b  Origin certificate (%s):%b\n' "$BOLD" "$ssl_type" "$NC"
+    printf '  %s\n' "──────────────────────────────────────"
+    if [[ -f "$cert_file" ]]; then
+        openssl x509 -in "$cert_file" -noout -subject -issuer -dates 2>&1 | sed 's/^/  /'
+        local san
+        san="$(openssl x509 -in "$cert_file" -noout -ext subjectAltName 2>/dev/null | tail -1 | sed 's/^[[:space:]]*/  SAN: /')"
+        [[ -n "$san" ]] && printf '%s\n' "$san"
+    else
+        printf '  %b!%b cert file missing: %s\n' "$YELLOW" "$NC" "$cert_file"
+    fi
+
+    printf '\n%b  Public TLS handshake (what visitors see):%b\n' "$BOLD" "$NC"
+    printf '  %s\n' "──────────────────────────────────────"
+    local public_cert
+    public_cert="$( set +o pipefail; echo | timeout 5 openssl s_client -connect "${domain}:443" -servername "$domain" 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null )"
+    if [[ -n "$public_cert" ]]; then
+        printf '%s\n' "$public_cert" | sed 's/^/  /'
+        if [[ "$ssl_type" == "self-signed" ]] && ! printf '%s' "$public_cert" | grep -q "CN = ${domain}"; then
+            printf '\n  %bℹ%b The visitor cert differs from the origin cert — the domain is\n' "$CYAN" "$NC"
+            printf '    proxied through Cloudflare, which presents its own edge certificate.\n'
+            printf '    Origin self-signed is used only for the CF→origin link (CF Full mode).\n'
+        fi
+    else
+        printf '  (could not reach %s:443 — check DNS / firewall)\n' "$domain"
+    fi
+    printf '\n'
+}
 _ssl_post_install_wp() {
     local domain="$1"
     site_exists "$domain" || return 0
