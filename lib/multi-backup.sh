@@ -112,7 +112,10 @@ restore_site() {
 
     local tmp_dir="/tmp/mwp-restore-${domain}-$$"
     mkdir -p "$tmp_dir"
-    trap 'rm -rf "$tmp_dir"' EXIT
+    # NOTE: don't use `trap ... EXIT` here — $tmp_dir is local to this function,
+    # so by the time the script exits and the trap fires, the variable is unset
+    # and `set -u` triggers "tmp_dir: unbound variable". Cleanup explicitly
+    # at the end of each branch instead.
 
     case "$backup_file" in
         *.tar.gz)

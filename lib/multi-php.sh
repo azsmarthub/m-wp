@@ -151,26 +151,40 @@ php_switch_site() {
 
     log_info "Switching $domain: PHP ${old_version} → ${new_version}"
 
-    # Remove old pool
-    php_delete_pool "$site_user" "$old_version"
+    # Zero-downtime ordering:
+    #  1. Create NEW pool first (new socket goes live before nginx switches)
+    #  2. Wait until the new socket file actually exists
+    #  3. Update nginx vhost + reload (now talking to the new socket)
+    #  4. Delete OLD pool last (old socket goes away after nginx is off it)
 
-    # Export vars needed by php_create_pool
     DOMAIN="$domain"
     SITE_USER="$site_user"
     PHP_VERSION="$new_version"
     WEB_ROOT="$web_root"
     CACHE_PATH="$cache_path"
 
-    # Create new pool
+    # 1. Create new pool (this also restarts php<new>-fpm)
     php_create_pool "$domain"
 
-    # Update Nginx vhost to use new socket
+    # 2. Wait up to 5s for the new socket to appear
+    local new_sock="/run/php/php${new_version}-fpm-${site_user}.sock"
+    local i=0
+    while [[ ! -S "$new_sock" && $i -lt 50 ]]; do
+        sleep 0.1
+        i=$(( i + 1 ))
+    done
+    [[ -S "$new_sock" ]] || log_warn "New PHP-FPM socket not ready after 5s: $new_sock"
+
+    # 3. Update Nginx vhost to use new socket + reload
     local nginx_conf="/etc/nginx/sites-available/${domain}.conf"
     if [[ -f "$nginx_conf" ]]; then
         sed -i "s|php${old_version}-fpm-${site_user}\.sock|php${new_version}-fpm-${site_user}.sock|g" "$nginx_conf"
         nginx_reload
         log_sub "Nginx updated to PHP ${new_version} socket"
     fi
+
+    # 4. Remove old pool (now safe — nginx no longer references it)
+    php_delete_pool "$site_user" "$old_version"
 
     # Update registry
     site_set "$domain" "PHP_VERSION" "$new_version"
