@@ -30,7 +30,7 @@ ssl_issue() {
     fi
 
     local certbot_args=(
-        certonly --nginx --non-interactive --agree-tos
+        certbot certonly --nginx --non-interactive --agree-tos
         --email "admin@${domain}" -d "$domain"
     )
     [[ $include_www -eq 1 ]] && certbot_args+=( -d "www.${domain}" )
