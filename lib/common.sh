@@ -117,8 +117,13 @@ confirm() {
 # ---------------------------------------------------------------------------
 generate_password() {
     local length="${1:-24}"
-    tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom 2>/dev/null | head -c "$length" || \
-        openssl rand -base64 "$length" | tr -dc 'A-Za-z0-9' | head -c "$length"
+    # Run in a subshell with pipefail OFF so SIGPIPE from `head` closing the
+    # pipe doesn't cascade and make the function fall through to the fallback
+    # (which used to concatenate output and return double-length passwords).
+    (
+        set +o pipefail
+        LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom 2>/dev/null | head -c "$length"
+    )
 }
 
 # ---------------------------------------------------------------------------
@@ -149,7 +154,9 @@ server_set() {
 
 server_get() {
     local key="$1"
-    grep "^${key}=" "$MWP_SERVER_CONF" 2>/dev/null | cut -d= -f2-
+    # Always return 0 — callers use `local x; x="$(server_get K)"` which
+    # would otherwise trip `set -e` when the key doesn't exist (grep rc=1).
+    grep "^${key}=" "$MWP_SERVER_CONF" 2>/dev/null | cut -d= -f2- || true
 }
 
 # ---------------------------------------------------------------------------
@@ -177,7 +184,7 @@ site_get() {
     local domain="$1" key="$2"
     local conf
     conf="$(site_conf_path "$domain")"
-    grep "^${key}=" "$conf" 2>/dev/null | cut -d= -f2-
+    grep "^${key}=" "$conf" 2>/dev/null | cut -d= -f2- || true
 }
 
 site_exists() {
