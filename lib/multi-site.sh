@@ -149,9 +149,11 @@ _site_install_wordpress() {
     # Ensure WP-CLI available
     command -v wp >/dev/null 2>&1 || die "WP-CLI not found. Run install.sh first."
 
-    # Generate WP credentials — avoid "admin" (most targeted username)
+    # Generate WP credentials — avoid "admin" (most targeted username).
+    # Use a subshell with pipefail OFF; otherwise head closing the pipe sends
+    # SIGPIPE to tr → pipeline rc=141 → caller's set -e exits site_create.
     local rand_suffix
-    rand_suffix="$(tr -dc 'a-z0-9' </dev/urandom | head -c6)"
+    rand_suffix="$( set +o pipefail; LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c6 )"
     WP_ADMIN_USER="wpadm${rand_suffix}"
     WP_ADMIN_EMAIL="webmaster@${DOMAIN}"
     WP_ADMIN_PASS="$(generate_password 20)"
