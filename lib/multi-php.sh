@@ -177,13 +177,29 @@ php_switch_site() {
 
     # 3. Update Nginx vhost to use new socket + reload
     local nginx_conf="/etc/nginx/sites-available/${domain}.conf"
+    local old_sock="/run/php/php${old_version}-fpm-${site_user}.sock"
     if [[ -f "$nginx_conf" ]]; then
         sed -i "s|php${old_version}-fpm-${site_user}\.sock|php${new_version}-fpm-${site_user}.sock|g" "$nginx_conf"
         nginx_reload
         log_sub "Nginx updated to PHP ${new_version} socket"
     fi
 
-    # 4. Remove old pool (now safe — nginx no longer references it)
+    # 4. Wait for old nginx workers to drain (still holding the old socket).
+    #    `systemctl reload nginx` returns immediately after sending SIGHUP, so
+    #    old workers may still be processing in-flight requests against the
+    #    old socket. If we delete the old pool before they drain, those
+    #    requests get "Connection reset by peer" → 502 to the visitor.
+    local drain=0
+    while [[ $drain -lt 30 ]]; do  # max 3 seconds
+        # Check if any nginx process still has a connection to the old socket
+        if ! lsof -n 2>/dev/null | grep -q "$old_sock"; then
+            break
+        fi
+        sleep 0.1
+        drain=$(( drain + 1 ))
+    done
+
+    # 5. Remove old pool (now safe — nginx no longer references it)
     php_delete_pool "$site_user" "$old_version"
 
     # Update registry
