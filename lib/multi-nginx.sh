@@ -105,8 +105,9 @@ nginx_enable_https() {
         cat >> "$conf" <<HTTPS_BLOCK
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name ${domain} www.${domain};
 
     ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;

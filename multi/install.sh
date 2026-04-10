@@ -140,9 +140,15 @@ step_nginx() {
     local worker_conn=$(( cpu_cores * 1024 ))
     [[ $worker_conn -lt 1024 ]] && worker_conn=1024
 
+    # worker_rlimit_nofile must be >= worker_connections * 2 to avoid
+    # "worker_connections exceed open file resource limit" warning.
+    local worker_rlimit=$(( worker_conn * 2 ))
+    [[ $worker_rlimit -lt 8192 ]] && worker_rlimit=8192
+
     cat > /etc/nginx/nginx.conf <<NGINXCONF
 user www-data;
 worker_processes auto;
+worker_rlimit_nofile ${worker_rlimit};
 pid /run/nginx.pid;
 error_log /var/log/nginx/error.log warn;
 
@@ -175,6 +181,9 @@ http {
     client_max_body_size     64M;
     client_body_buffer_size  128k;
     large_client_header_buffers 4 16k;
+
+    # FastCGI cache key (per-site cache zones declared in vhosts)
+    fastcgi_cache_key "\$scheme\$request_method\$host\$request_uri";
 
     # Gzip (global)
     gzip on;
