@@ -388,10 +388,13 @@ step_firewall() {
     ufw --force reset >/dev/null 2>&1 || true
     ufw default deny incoming >/dev/null 2>&1
     ufw default allow outgoing >/dev/null 2>&1
-    ufw allow ssh >/dev/null 2>&1
-    ufw allow 'Nginx Full' >/dev/null 2>&1
+    ufw allow 22/tcp  >/dev/null 2>&1   # SSH
+    ufw allow 80/tcp  >/dev/null 2>&1   # HTTP
+    ufw allow 443/tcp >/dev/null 2>&1   # HTTPS
+    # NOTE: don't use 'Nginx Full' app profile — it's only registered when
+    # nginx is installed from Ubuntu's repo, not from nginx.org mainline.
     ufw --force enable >/dev/null 2>&1
-    log_sub "UFW enabled (SSH + HTTP/HTTPS)"
+    log_sub "UFW enabled (22/80/443 tcp)"
 
     # Fail2ban
     apt_install fail2ban
