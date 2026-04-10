@@ -21,7 +21,7 @@ pm.max_requests      = 500
 php_admin_value[open_basedir]    = /home/{{SITE_USER}}:/tmp:/usr/share/php:/usr/share/wordpress
 php_admin_value[upload_tmp_dir]  = /home/{{SITE_USER}}/tmp
 php_admin_value[session.save_path] = /home/{{SITE_USER}}/tmp
-php_admin_flag[disable_functions] = passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source
+php_admin_value[disable_functions] = passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source
 
 ; Logging
 php_admin_value[error_log]       = /home/{{SITE_USER}}/logs/php-error.log
