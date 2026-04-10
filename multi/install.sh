@@ -243,6 +243,29 @@ step_php() {
         log_sub "Default www pool disabled (not isolated)"
     fi
 
+    # Placeholder pool — php-fpm refuses to start with zero pools.
+    # This pool is minimal (1 child, ondemand, never reached by any vhost)
+    # and gets removed automatically once the first real site pool exists.
+    local placeholder_pool="/etc/php/${default_php}/fpm/pool.d/_placeholder.conf"
+    if ! ls /etc/php/${default_php}/fpm/pool.d/*.conf 2>/dev/null | grep -qv _placeholder; then
+        cat > "$placeholder_pool" <<PLACEHOLDER
+; mwp placeholder pool — required for php-fpm to start before any site exists.
+; Removed automatically when the first real per-site pool is created.
+[_placeholder]
+user = nobody
+group = nogroup
+listen = /run/php/_mwp_placeholder.sock
+listen.owner = nobody
+listen.group = nogroup
+listen.mode = 0600
+pm = ondemand
+pm.max_children = 1
+pm.process_idle_timeout = 10s
+pm.max_requests = 100
+PLACEHOLDER
+        log_sub "Placeholder pool created (will be removed on first site create)"
+    fi
+
     # Global PHP-FPM config: logging
     sed -i 's|^;error_log =.*|error_log = /var/log/mwp/php-fpm.log|' \
         "/etc/php/${default_php}/fpm/php-fpm.conf" 2>/dev/null || true

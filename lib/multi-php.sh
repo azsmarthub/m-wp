@@ -104,8 +104,12 @@ php_create_pool() {
 
     render_template "$MWP_DIR/templates/php/multi-pool.conf.tpl" > "$pool_file"
 
+    # Remove placeholder pool if present (only needed before first real pool exists)
+    local placeholder="${pool_dir}/_placeholder.conf"
+    [[ -f "$placeholder" ]] && rm -f "$placeholder" && log_sub "Placeholder pool removed"
+
     systemctl restart "php${PHP_VERSION}-fpm"
-    log_sub "PHP-FPM pool created: $pool_file (pm.max_children=${pm_children})"
+    log_sub "PHP-FPM pool created: $pool_file (pm.max_children=${PM_MAX_CHILDREN})"
 }
 
 # ---------------------------------------------------------------------------
