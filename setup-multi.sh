@@ -91,10 +91,11 @@ else
     ok "Cloned to $MWP_INSTALL_DIR"
 fi
 
-# Make scripts executable
-chmod +x "$MWP_INSTALL_DIR/multi/install.sh" \
-          "$MWP_INSTALL_DIR/multi/menu.sh" \
-          "$MWP_INSTALL_DIR/lib/"*.sh
+# Ensure entry-point scripts are executable.
+# (lib/*.sh are sourced, not exec'd, so no chmod needed there. Touching their
+# mode would also cause `git pull --ff-only` to fail on next run because git
+# sees the mode change as a local modification.)
+chmod +x "$MWP_INSTALL_DIR/multi/install.sh" "$MWP_INSTALL_DIR/multi/menu.sh"
 ok "Scripts executable"
 
 # Run server setup
