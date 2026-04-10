@@ -54,11 +54,27 @@ else
     die "Cannot detect OS"
 fi
 
-# Install git if needed
+# Refresh apt cache and upgrade existing packages BEFORE doing anything else.
+# A reinstalled VPS often ships with stale apt sources or pending security
+# updates, which can cause later steps (nginx repo, ondrej PPA, MariaDB repo)
+# to fail with 404s or signature errors. Doing this once upfront makes the
+# rest of the install much more reliable.
+info "Refreshing apt cache..."
+apt-get update -qq 2>&1 | tail -3 || die "apt-get update failed — check network/sources"
+ok "apt cache refreshed"
+
+info "Upgrading existing packages (may take a minute)..."
+DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -q \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" 2>&1 | tail -3 || \
+    die "apt-get upgrade failed"
+ok "system packages up to date"
+
+# Install git if needed (apt cache is already fresh now)
 if ! command -v git >/dev/null 2>&1; then
     info "Installing git..."
-    apt-get update -qq 2>&1 | tail -1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q git 2>&1 | tail -2 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q git 2>&1 | tail -2 || \
+        die "git install failed"
 fi
 ok "git available"
 
