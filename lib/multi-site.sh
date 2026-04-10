@@ -320,7 +320,12 @@ SQL
 
     # 4. System user + home
     if id "$site_user" &>/dev/null; then
+        # Remove www-data from the site group first — otherwise userdel keeps
+        # the group around (it has "other members") and the next site_create
+        # for the same domain fails with "group already exists".
+        gpasswd -d www-data "$site_user" 2>/dev/null || true
         userdel -r "$site_user" 2>/dev/null || true
+        groupdel "$site_user" 2>/dev/null || true
         log_sub "User '${site_user}' and home deleted"
     fi
 
