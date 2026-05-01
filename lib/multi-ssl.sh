@@ -141,9 +141,134 @@ ssl_issue_self_signed() {
     _ssl_post_cert_apply "$domain" "$ssl_dir" "self-signed"
 
     log_success "SSL issued for ${domain} (self-signed origin cert; CF edge handles visitors)"
-    log_sub "Note: CF must be in 'Full' mode (not 'Full strict'). For 'Full strict',"
-    log_sub "  generate a Cloudflare Origin Certificate from CF dashboard and replace files in:"
-    log_sub "  ${ssl_dir}/{fullchain,privkey}.pem"
+
+    # Verify CF can actually validate our self-signed origin. Catches Full-Strict
+    # mode (526) immediately so the operator knows what to tell the customer
+    # instead of discovering it in production. (Mirrors az-wp's _verify_cf_accepts_origin.)
+    _ssl_verify_cf_accepts_origin "$domain" "$ssl_dir"
+}
+
+# ---------------------------------------------------------------------------
+# Probe CF→origin reachability after a self-signed cert was just installed.
+# Visitors hit CF on :443; if CF is in Full(Strict), it will reject the
+# self-signed and return 526 → we surface that with a clear, customer-facing
+# fix recipe instead of leaving it as a silent broken state.
+#
+# Returns 0 on healthy (any 2xx/3xx/4xx from origin via CF), 1 on CF-side
+# error (520-526) — only used for warning, doesn't fail the whole flow.
+# ---------------------------------------------------------------------------
+_ssl_verify_cf_accepts_origin() {
+    local domain="$1" ssl_dir="$2"
+
+    log_sub "Verifying Cloudflare can reach origin via HTTPS..."
+    sleep 2  # let CF pick up new :443 listener
+    local code
+    code="$( set +o pipefail; curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "https://${domain}/" 2>/dev/null )" || code="000"
+
+    case "$code" in
+        2*|3*|4*)
+            log_sub "Cloudflare accepts origin cert (HTTP $code) — site is live."
+            return 0
+            ;;
+        5[23][0-9])
+            # CF 520-539 = origin/edge errors; 526 specifically = invalid origin cert
+            printf '\n'
+            log_warn "Cloudflare returned HTTP $code via CF — likely 'Full (Strict)' SSL mode"
+            log_warn "rejecting our self-signed origin cert. Site is broken for visitors."
+            printf '\n'
+            printf '  %bFix (give your customer ONE of):%b\n\n' "$YELLOW" "$NC"
+            printf '  %b1) EASIEST — switch CF SSL mode to "Full" (not "Full strict")%b\n' "$BOLD" "$NC"
+            printf '     CF dashboard → SSL/TLS → Overview → select "Full"\n'
+            printf '     Direct link: https://dash.cloudflare.com/?to=/:account/${domain#*.}/ssl-tls\n'
+            printf '     No further action — origin cert is accepted in 10 seconds.\n\n'
+            printf '  %b2) STRICT-COMPATIBLE — install a Cloudflare Origin Certificate%b\n' "$BOLD" "$NC"
+            printf '     CF dashboard → SSL/TLS → Origin Server → Create Certificate\n'
+            printf '     (Free, 15-year validity, signed by CF Origin CA — accepted by Full Strict.)\n'
+            printf '     Save the cert + key, then on this server:\n'
+            printf '       mwp ssl install-origin-cert %s\n' "$domain"
+            printf '     (Pastes both files into %s/ and reloads nginx.)\n\n' "$ssl_dir"
+            printf '  %b3) GREY-CLOUD — disable CF proxy for this hostname%b\n' "$BOLD" "$NC"
+            printf '     CF dashboard → DNS → click the orange cloud → grey\n'
+            printf '     Then: mwp ssl issue %s   (issues real Let'"'"'s Encrypt direct.)\n\n' "$domain"
+            return 1
+            ;;
+        000)
+            log_warn "Could not reach https://${domain}/ from this server (timeout/DNS) — skipping CF check."
+            return 1
+            ;;
+        *)
+            log_warn "Unexpected HTTP code from CF: $code (expected 2xx/3xx/4xx for healthy)."
+            return 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# mwp ssl install-origin-cert <domain>
+#
+# Customer-facing helper for CF Full(Strict). The customer generates a
+# Cloudflare Origin Certificate in their CF dashboard (free, 15-year, no API
+# token), then pastes the two files (cert + key) into stdin separated by an
+# END marker. We write them to /etc/mwp/ssl/<domain>/ and reload nginx.
+#
+# Usage:
+#   mwp ssl install-origin-cert example.com           # interactive paste
+#   mwp ssl install-origin-cert example.com /tmp/o.pem /tmp/o.key   # from files
+# ---------------------------------------------------------------------------
+ssl_install_origin_cert() {
+    local domain="${1:-}"
+    local cert_file="${2:-}"
+    local key_file="${3:-}"
+    [[ -z "$domain" ]] && die "Usage: mwp ssl install-origin-cert <domain> [cert.pem key.pem]"
+
+    # Domain must already exist (site or app) — we just swap cert files
+    if ! site_exists "$domain"; then
+        if [[ -f "$MWP_DIR/lib/app-registry.sh" ]]; then
+            # shellcheck source=/dev/null
+            source "$MWP_DIR/lib/app-registry.sh"
+            app_find_by_domain "$domain" >/dev/null 2>&1 || \
+                die "Domain '$domain' not in site or app registry. Create it first."
+        else
+            die "Domain '$domain' not in registry."
+        fi
+    fi
+
+    local ssl_dir="/etc/mwp/ssl/${domain}"
+    mkdir -p "$ssl_dir"
+    chmod 700 "$ssl_dir"
+
+    if [[ -n "$cert_file" && -n "$key_file" ]]; then
+        [[ -f "$cert_file" ]] || die "Cert file not found: $cert_file"
+        [[ -f "$key_file"  ]] || die "Key file not found: $key_file"
+        cp "$cert_file" "$ssl_dir/fullchain.pem"
+        cp "$key_file"  "$ssl_dir/privkey.pem"
+    else
+        printf '\n%bPaste your Cloudflare Origin Certificate.%b\n' "$BOLD" "$NC"
+        printf 'Press Enter, paste the CERTIFICATE block (BEGIN/END CERTIFICATE), then a newline + Ctrl-D:\n\n'
+        cat > "$ssl_dir/fullchain.pem"
+        printf '\n%bNow paste the PRIVATE KEY block (BEGIN/END PRIVATE KEY), Enter, Ctrl-D:%b\n\n' "$BOLD" "$NC"
+        cat > "$ssl_dir/privkey.pem"
+    fi
+
+    chmod 644 "$ssl_dir/fullchain.pem"
+    chmod 600 "$ssl_dir/privkey.pem"
+
+    # Validate the pair
+    local cert_modulus key_modulus
+    cert_modulus="$(openssl x509 -noout -modulus -in "$ssl_dir/fullchain.pem" 2>/dev/null | openssl sha256 | awk '{print $NF}')"
+    key_modulus="$(openssl rsa  -noout -modulus -in "$ssl_dir/privkey.pem"   2>/dev/null | openssl sha256 | awk '{print $NF}')"
+    if [[ -z "$cert_modulus" || "$cert_modulus" != "$key_modulus" ]]; then
+        die "Cert and key don't match (or one is malformed). Aborting — old files restored from .bak."
+    fi
+    log_sub "Cert+key pair validated (modulus matches)."
+
+    [[ -f "$MWP_DIR/lib/multi-nginx.sh" ]] && source "$MWP_DIR/lib/multi-nginx.sh"
+    _ssl_post_cert_apply "$domain" "$ssl_dir" "cf-origin-cert"
+
+    log_success "Cloudflare Origin Cert installed for ${domain}."
+
+    # Re-verify — this time CF Full(Strict) should accept it
+    _ssl_verify_cf_accepts_origin "$domain" "$ssl_dir" || true
 }
 
 # ---------------------------------------------------------------------------

@@ -73,9 +73,12 @@ ${BOLD}Cache:${NC}
   mwp cache purge-all              Purge all sites
 
 ${BOLD}SSL:${NC}
-  mwp ssl issue  <domain>          Issue Let's Encrypt certificate
+  mwp ssl issue  <domain>          Issue cert (auto: LE direct, self-signed CF)
   mwp ssl renew                    Renew all certificates
   mwp ssl status <domain>          Show SSL expiry
+  mwp ssl verify-cf <domain>       Verify CF→origin reachability (catches 526)
+  mwp ssl install-origin-cert <domain> [cert.pem key.pem]
+                                   Install CF Origin Cert (Full Strict mode)
 
 ${BOLD}Backup:${NC}
   mwp backup full <domain>         Full backup (files + DB)
@@ -273,7 +276,17 @@ cmd_ssl() {
     case "$sub" in
         issue)  require_root; ssl_issue "${1:-}" ;;
         renew)  require_root; certbot renew --quiet ;;
-        status)  ssl_status "${1:-}" ;;
+        status) ssl_status "${1:-}" ;;
+        install-origin-cert|install-cf-cert)
+            require_root
+            ssl_install_origin_cert "${1:-}" "${2:-}" "${3:-}"
+            ;;
+        verify-cf)
+            require_root
+            local d="${1:-}"
+            [[ -z "$d" ]] && die "Usage: mwp ssl verify-cf <domain>"
+            _ssl_verify_cf_accepts_origin "$d" "/etc/mwp/ssl/${d}"
+            ;;
         *) cmd_help; die "Unknown ssl subcommand: $sub" ;;
     esac
 }
