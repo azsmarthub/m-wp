@@ -254,11 +254,12 @@ _cf_apply_nginx_realip() {
         printf '\nreal_ip_header CF-Connecting-IP;\nreal_ip_recursive on;\n\n'
 
         # Block 2: geo $mwp_is_cf_source — per-request flag used by vhosts
-        # marked as CF-proxied. NOTE: $remote_addr in `geo` is the ACTUAL TCP
-        # source IP (not the X-Forwarded-For value rewritten by real_ip).
-        # That is exactly what we want — we are deciding "is this connection
-        # from CF or from a direct-IP scanner?".
-        printf 'geo $mwp_is_cf_source {\n'
+        # marked as CF-proxied. CRITICAL: use $realip_remote_addr (the ORIGINAL
+        # TCP source IP, before set_real_ip_from rewrites it). If we used plain
+        # $remote_addr, real_ip would already have replaced it with the
+        # CF-Connecting-IP header value (the actual visitor) and we would block
+        # *every* CF request because the visitor IPs are not in CF range.
+        printf 'geo $realip_remote_addr $mwp_is_cf_source {\n'
         printf '    default 0;\n'
         while IFS= read -r cidr; do
             [[ -z "$cidr" ]] && continue
