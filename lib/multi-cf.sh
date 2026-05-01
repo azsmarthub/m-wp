@@ -127,21 +127,27 @@ _cf_safety_check() {
 _cf_apply_ufw_rules() {
     log_sub "Re-applying UFW 80/443 rules (CF-only)..."
 
+    # UFW pads single-digit rule numbers with leading spaces: "[ 2]" not "[2]".
+    # Regex must use \s* inside the brackets, otherwise we never find the rule
+    # to delete and the lockdown silently no-ops while pretending to succeed.
+
     # Wipe old mwp-cf rules
-    local before after
     while ufw status numbered 2>/dev/null | grep -q "mwp-cf"; do
-        # Always delete the lowest-numbered mwp-cf rule
         local n
-        n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 | grep -oE '\[[0-9]+\]' | tr -d '[]')"
+        n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 \
+             | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
         yes y | ufw delete "$n" >/dev/null 2>&1 || break
     done
 
-    # Wipe default 80/443 ALLOW ANYWHERE rules (rule number table reshuffles
-    # after each delete, so loop until none match)
-    while ufw status numbered 2>/dev/null | grep -E "^\[[0-9]+\] (80|443)/tcp\s+ALLOW IN\s+Anywhere" | grep -qv "mwp-cf"; do
+    # Wipe default 80/443 ALLOW ANYWHERE rules. Match end-of-line so we don't
+    # accidentally delete commented variants. Use 80,443/tcp and 80/tcp + 443/tcp
+    # both shapes — UFW collapses or splits depending on how the rule was added.
+    local pattern='^\[\s*[0-9]+\s*\]\s+(80|443|80,443)/tcp\s+ALLOW IN\s+Anywhere(\s+\(v6\))?\s*$'
+    while ufw status numbered 2>/dev/null | grep -qE "$pattern"; do
         local n
-        n="$(ufw status numbered 2>/dev/null | grep -E "^\[[0-9]+\] (80|443)/tcp\s+ALLOW IN\s+Anywhere" | grep -v "mwp-cf" | head -1 | grep -oE '\[[0-9]+\]' | tr -d '[]')"
+        n="$(ufw status numbered 2>/dev/null | grep -E "$pattern" | head -1 \
+             | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
         yes y | ufw delete "$n" >/dev/null 2>&1 || break
     done
@@ -235,11 +241,12 @@ cf_restrict_off() {
 
     log_info "Removing CF restriction..."
 
-    # Wipe all mwp-cf UFW rules
+    # Wipe all mwp-cf UFW rules (same regex caveat — UFW pads "[ 2]" with spaces)
     local count=0
     while ufw status numbered 2>/dev/null | grep -q "mwp-cf"; do
         local n
-        n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 | grep -oE '\[[0-9]+\]' | tr -d '[]')"
+        n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 \
+             | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
         yes y | ufw delete "$n" >/dev/null 2>&1 || break
         count=$(( count + 1 ))
