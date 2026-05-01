@@ -117,10 +117,38 @@ php_create_pool() {
 # ---------------------------------------------------------------------------
 php_delete_pool() {
     local site_user="$1" php_version="$2"
-    local pool_file="/etc/php/${php_version}/fpm/pool.d/${site_user}.conf"
+    local pool_dir="/etc/php/${php_version}/fpm/pool.d"
+    local pool_file="${pool_dir}/${site_user}.conf"
 
     rm -f "$pool_file"
-    systemctl reload "php${php_version}-fpm" 2>/dev/null || true
+
+    # If this was the last real pool, restore the placeholder. Without it
+    # php-fpm refuses to start ("No pool defined") and a future site_create's
+    # `systemctl restart phpX-fpm` would fail. Mirrors the placeholder block
+    # in install.sh step_php().
+    if ! ls "$pool_dir"/*.conf 2>/dev/null | grep -qv _placeholder; then
+        cat > "${pool_dir}/_placeholder.conf" <<PLACEHOLDER
+; mwp placeholder pool — restored after last site removed.
+; Removed automatically when the next per-site pool is created.
+[_placeholder]
+user = nobody
+group = nogroup
+listen = /run/php/_mwp_placeholder.sock
+listen.owner = nobody
+listen.group = nogroup
+listen.mode = 0600
+pm = ondemand
+pm.max_children = 1
+pm.process_idle_timeout = 10s
+pm.max_requests = 100
+PLACEHOLDER
+        log_sub "Last real pool removed — placeholder restored to keep php-fpm runnable"
+    fi
+
+    # Restart (not reload): if the service was already in failed state from a
+    # prior empty-pool reload, reload is a no-op. restart fully re-execs.
+    systemctl restart "php${php_version}-fpm" 2>/dev/null || \
+        systemctl reload "php${php_version}-fpm" 2>/dev/null || true
     log_sub "PHP-FPM pool removed: $pool_file"
 }
 
