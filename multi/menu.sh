@@ -80,6 +80,11 @@ ${BOLD}SSL:${NC}
   mwp ssl install-origin-cert <domain> [cert.pem key.pem]
                                    Install CF Origin Cert (Full Strict mode)
 
+${BOLD}SSH hardening:${NC}
+  mwp ssh status                   Show auth modes + key count + ban stats
+  mwp ssh harden                   Disable password auth (key-only) — needs ≥1 root key
+  mwp ssh unharden                 Revert to distro default (password+key)
+
 ${BOLD}Backup:${NC}
   mwp backup full <domain>         Full backup (files + DB)
   mwp backup db   <domain>         Database-only backup
@@ -396,6 +401,17 @@ main() {
         restore) cmd_restore "$@" ;;
         docker)  cmd_docker "$@" ;;
         app|apps) cmd_app   "$@" ;;
+        ssh)
+            local sub="${1:-status}"
+            shift || true
+            source "$MWP_DIR/lib/multi-ssh.sh"
+            case "$sub" in
+                status)    ssh_status ;;
+                harden)    ssh_harden ;;
+                unharden)  ssh_unharden ;;
+                *) cmd_help; die "Unknown ssh subcommand: $sub" ;;
+            esac
+            ;;
         panel)
             local sub="${1:-info}"
             case "$sub" in
