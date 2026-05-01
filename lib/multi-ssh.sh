@@ -12,7 +12,12 @@
 _MWP_SSH_LOADED=1
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
-SSHD_DROPIN="/etc/ssh/sshd_config.d/50-mwp-harden.conf"
+# Use 01- prefix so we load BEFORE 50-cloud-init.conf (alphabetical).
+# OpenSSH uses first-occurrence-wins — if cloud-init's drop-in sets
+# PasswordAuthentication yes and loads first, our `no` is silently ignored
+# even though `sshd -T` will report yes. Naming us 01- guarantees we win.
+SSHD_DROPIN="/etc/ssh/sshd_config.d/01-mwp-harden.conf"
+SSHD_DROPIN_LEGACY="/etc/ssh/sshd_config.d/50-mwp-harden.conf"
 
 # ---------------------------------------------------------------------------
 # Refuse if the operator has no working key — disabling password auth without
@@ -48,9 +53,11 @@ ssh_harden() {
     log_info "Hardening SSH: ${key_count} root key(s) detected — disabling password auth."
     log_warn "Verify you can still SSH in BEFORE closing your current session."
 
-    # Use a drop-in (50-* loads after distro defaults) so the original
-    # sshd_config is never touched — easier to revert + safer on apt upgrade.
+    # Drop-in lives at 01- so we load BEFORE 50-cloud-init.conf et al.
+    # The original sshd_config is never touched — easier to revert + safer on apt upgrade.
     mkdir -p "$(dirname "$SSHD_DROPIN")"
+    # Clean up any pre-0.3.4 install that left the file at 50-mwp-harden.conf
+    [[ -f "$SSHD_DROPIN_LEGACY" ]] && rm -f "$SSHD_DROPIN_LEGACY"
     cat > "$SSHD_DROPIN" <<DROPIN
 # mwp — SSH hardening (key-only)
 # Toggle off:  mwp ssh unharden
@@ -98,13 +105,13 @@ DROPIN
 ssh_unharden() {
     require_root
 
-    if [[ ! -f "$SSHD_DROPIN" ]]; then
+    if [[ ! -f "$SSHD_DROPIN" && ! -f "$SSHD_DROPIN_LEGACY" ]]; then
         log_info "SSH not hardened by mwp — nothing to revert."
         return 0
     fi
 
     log_info "Reverting SSH harden — restoring distro defaults (password auth back on)."
-    rm -f "$SSHD_DROPIN"
+    rm -f "$SSHD_DROPIN" "$SSHD_DROPIN_LEGACY"
 
     if ! sshd -t 2>&1; then
         die "sshd config test failed AFTER removing drop-in — manual fix required."
