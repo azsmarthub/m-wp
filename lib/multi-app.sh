@@ -40,6 +40,7 @@ app_create() {
     local domain="" image="" internal_port="" memory_limit=""
     local env_args=() volume_args=()
     local env_file=""
+    local allow_non_cf=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -50,6 +51,7 @@ app_create() {
             --env)       env_args+=( -e "$2" ); shift 2 ;;
             --env-file)  env_file="$2"; shift 2 ;;
             --volume|-v) volume_args+=( -v "$2" ); shift 2 ;;
+            --allow-non-cf) allow_non_cf=1; shift ;;
             *) die "Unknown option: $1" ;;
         esac
     done
@@ -69,6 +71,25 @@ app_create() {
     [[ -n "$existing_app" ]] && die "Domain '$domain' is already used by app '$existing_app'."
 
     nginx_check_setup
+
+    # Same CF-restrict guard as site_create — refuse to ship a silently
+    # broken non-CF app when CF restriction is on (UFW would drop all
+    # external visitor traffic + LE ACME).
+    if [[ "$(server_get "CF_RESTRICTED")" == "yes" && $allow_non_cf -eq 0 ]]; then
+        local apex_ip
+        apex_ip="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
+                    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+        if [[ -n "$apex_ip" ]] && ! is_cloudflare_ip "$apex_ip"; then
+            log_error "$domain DNS → $apex_ip (NOT a Cloudflare IP)."
+            log_error "CF restriction is ON — this app would be unreachable from the internet."
+            printf '\n  %bPick one before re-running:%b\n\n' "$YELLOW" "$NC"
+            printf '  1) %bCF-proxy the domain%b first, then re-run.\n' "$BOLD" "$NC"
+            printf '  2) %bDisable CF restriction%b temporarily:  mwp cf restrict-off\n' "$BOLD" "$NC"
+            printf '  3) %bForce-create anyway%b (visitors will get TCP timeout):\n' "$BOLD" "$NC"
+            printf '     mwp app create %s ... --allow-non-cf\n\n' "$name"
+            die "Refusing to create unreachable app. See options above."
+        fi
+    fi
 
     # Default port if not specified — most Node/Next/n8n apps use 3000.
     internal_port="${internal_port:-3000}"

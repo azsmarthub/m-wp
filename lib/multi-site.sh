@@ -20,8 +20,20 @@ _load_site_deps() {
 site_create() {
     local domain="${1:-}"
 
+    # Optional flag: --allow-non-cf bypasses the cf-restrict warning
+    local allow_non_cf=0
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --allow-non-cf) allow_non_cf=1 ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+    set -- "${args[@]}"
+    domain="${1:-}"
+
     # --- Validate ---
-    [[ -z "$domain" ]] && die "Usage: mwp site create <domain>"
+    [[ -z "$domain" ]] && die "Usage: mwp site create <domain> [--allow-non-cf]"
     validate_domain "$domain" || die "Invalid domain: $domain"
     site_exists "$domain" && die "Site '$domain' already exists. Run: mwp site info $domain"
 
@@ -30,6 +42,31 @@ site_create() {
     # Guard: ensure install.sh was run first
     [[ -f "$MWP_SERVER_CONF" ]] || die "Server not initialized. Run install.sh first."
     nginx_check_setup
+
+    # Pre-flight: when CF restriction is on, a non-CF domain will be
+    # UNREACHABLE from the public internet (UFW drops all non-CF :443 traffic
+    # AND LE ACME challenge will fail because LE servers aren't in CF range).
+    # Warn loudly so the operator doesn't ship a silently-broken site.
+    if [[ "$(server_get "CF_RESTRICTED")" == "yes" && $allow_non_cf -eq 0 ]]; then
+        local apex_ip
+        apex_ip="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
+                    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+        if [[ -n "$apex_ip" ]] && ! is_cloudflare_ip "$apex_ip"; then
+            log_error "$domain DNS → $apex_ip (NOT a Cloudflare IP)."
+            log_error "CF restriction is ON — this site would be unreachable from the internet."
+            printf '\n  %bPick one before re-running:%b\n\n' "$YELLOW" "$NC"
+            printf '  1) %bCF-proxy the domain%b first (orange-cloud in CF DNS), then re-run.\n' "$BOLD" "$NC"
+            printf '  2) %bDisable CF restriction%b temporarily:  mwp cf restrict-off\n' "$BOLD" "$NC"
+            printf '     (the site will be reachable; you can re-enable restrict only\n'
+            printf '      after ALL sites are CF-proxied).\n'
+            printf '  3) %bForce-create anyway%b (HTTP/SSL will not work for visitors):\n' "$BOLD" "$NC"
+            printf '     mwp site create %s --allow-non-cf\n\n' "$domain"
+            die "Refusing to create unreachable site. See options above."
+        fi
+        # apex_ip empty = DNS not resolved yet — let the existing SSL flow
+        # handle this (it already prints a "DNS not propagated" hint and
+        # creates the site without SSL).
+    fi
 
     # --- Derive variables ---
     local slug site_user web_root cache_path db_name db_user db_pass redis_db
