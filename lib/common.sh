@@ -24,9 +24,11 @@ NC=$'\e[0m'
 # ---------------------------------------------------------------------------
 MWP_STATE_DIR="/etc/mwp"
 MWP_SITES_DIR="$MWP_STATE_DIR/sites"
+MWP_APPS_DIR="$MWP_STATE_DIR/apps"
 MWP_SERVER_CONF="$MWP_STATE_DIR/server.conf"
 MWP_LOG_DIR="/var/log/mwp"
 MWP_LOG_FILE="$MWP_LOG_DIR/mwp.log"
+MWP_APPS_DATA_ROOT="/var/lib/mwp/apps"
 
 # ---------------------------------------------------------------------------
 # Init
@@ -34,6 +36,7 @@ MWP_LOG_FILE="$MWP_LOG_DIR/mwp.log"
 mwp_init() {
     [[ ! -d "$MWP_STATE_DIR" ]] && mkdir -p "$MWP_STATE_DIR"
     [[ ! -d "$MWP_SITES_DIR" ]] && mkdir -p "$MWP_SITES_DIR"
+    [[ ! -d "$MWP_APPS_DIR" ]]  && mkdir -p "$MWP_APPS_DIR"
     [[ ! -d "$MWP_LOG_DIR" ]]   && mkdir -p "$MWP_LOG_DIR"
 
     if [[ -z "${MWP_VERSION:-}" && -n "${MWP_DIR:-}" && -f "$MWP_DIR/VERSION" ]]; then

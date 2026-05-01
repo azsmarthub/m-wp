@@ -26,6 +26,14 @@ _load_site_libs() {
     done
 }
 
+# Load Docker-app libs lazily (Phase 5: Docker apps)
+_load_app_libs() {
+    source "$MWP_DIR/lib/multi-docker.sh"
+    source "$MWP_DIR/lib/app-registry.sh"
+    source "$MWP_DIR/lib/multi-nginx.sh"
+    source "$MWP_DIR/lib/multi-app.sh"
+}
+
 # Load interactive menu lib lazily
 _load_menu_lib() {
     source "$MWP_DIR/lib/multi-menu.sh"
@@ -75,6 +83,21 @@ ${BOLD}Backup:${NC}
   mwp backup all                   Backup all sites
   mwp restore     <domain> <file>  Restore from backup
 
+${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
+  mwp docker install               Install Docker engine + nginx WS support
+  mwp docker status                Show Docker engine status
+  mwp app list                     List all apps
+  mwp app create <name> --domain D --image IMG [--port P] [--memory M]
+                                   [--env K=V]... [--env-file F] [--volume H:C]...
+  mwp app info     <name>          Show app config + container state
+  mwp app start    <name>          Start container
+  mwp app stop     <name>          Stop container
+  mwp app restart  <name>          Restart container
+  mwp app logs     <name> [-f]     Follow container logs
+  mwp app exec     <name> -- <cmd> Run a command inside the container
+  mwp app shell    <name>          Open a shell inside the container
+  mwp app delete   <name>          Delete app (container + vhost + data)
+
 ${BOLD}Server:${NC}
   mwp status                       Server + all sites overview
   mwp status <domain>              Single site status
@@ -89,6 +112,10 @@ ${BOLD}Examples:${NC}
   mwp php switch example.com 8.2
   mwp cache purge example.com
   mwp backup full example.com
+  mwp docker install
+  mwp app create n8n --domain n8n.example.com --image docker.n8n.io/n8nio/n8n --port 5678
+  mwp app create blog --domain blog.example.com --image ghost:5 --port 2368
+  mwp app create api  --domain api.example.com  --image ghcr.io/me/api:latest --port 8080
 
 HELP
 }
@@ -283,6 +310,50 @@ cmd_restore() {
 }
 
 # ---------------------------------------------------------------------------
+# Docker engine commands
+# ---------------------------------------------------------------------------
+cmd_docker() {
+    local sub="${1:-status}"
+    shift || true
+    _load_app_libs
+
+    case "$sub" in
+        install) docker_engine_install ;;
+        status)  docker_engine_status ;;
+        *) cmd_help; die "Unknown docker subcommand: $sub" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# App (Docker container) commands
+# ---------------------------------------------------------------------------
+cmd_app() {
+    local sub="${1:-list}"
+    shift || true
+    _load_app_libs
+
+    case "$sub" in
+        create)  app_create "$@" ;;
+        delete|rm) app_delete "${1:-}" ;;
+        list|ls) app_registry_print_list ;;
+        info)    app_registry_print_info "${1:-}" ;;
+        start)   app_start "${1:-}" ;;
+        stop)    app_stop  "${1:-}" ;;
+        restart) app_restart "${1:-}" ;;
+        logs)
+            local name="${1:-}"; shift || true
+            app_logs "$name" "$@"
+            ;;
+        exec)
+            local name="${1:-}"; shift || true
+            app_exec "$name" "$@"
+            ;;
+        shell)   app_shell "${1:-}" ;;
+        *) cmd_help; die "Unknown app subcommand: $sub" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 main() {
@@ -310,6 +381,8 @@ main() {
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
+        docker)  cmd_docker "$@" ;;
+        app|apps) cmd_app   "$@" ;;
         panel)
             local sub="${1:-info}"
             case "$sub" in

@@ -92,12 +92,7 @@ ssl_issue_letsencrypt() {
     fi
 
     [[ -f "$MWP_DIR/lib/multi-nginx.sh" ]] && source "$MWP_DIR/lib/multi-nginx.sh"
-    nginx_enable_https "$domain" "/etc/letsencrypt/live/${domain}"
-
-    _ssl_post_install_wp "$domain"
-
-    site_set "$domain" "SSL_ENABLED" "letsencrypt"
-    site_set "$domain" "SSL_ISSUED_AT" "$(date '+%Y-%m-%d')"
+    _ssl_post_cert_apply "$domain" "/etc/letsencrypt/live/${domain}" "letsencrypt"
 
     # Auto-renewal cron (if not already set up by certbot package)
     if [[ ! -f /etc/cron.d/certbot ]] && ! systemctl is-active --quiet certbot.timer 2>/dev/null; then
@@ -143,17 +138,54 @@ ssl_issue_self_signed() {
     log_sub "Self-signed cert installed at ${ssl_dir}/"
 
     [[ -f "$MWP_DIR/lib/multi-nginx.sh" ]] && source "$MWP_DIR/lib/multi-nginx.sh"
-    nginx_enable_https "$domain" "$ssl_dir"
-
-    _ssl_post_install_wp "$domain"
-
-    site_set "$domain" "SSL_ENABLED" "self-signed"
-    site_set "$domain" "SSL_ISSUED_AT" "$(date '+%Y-%m-%d')"
+    _ssl_post_cert_apply "$domain" "$ssl_dir" "self-signed"
 
     log_success "SSL issued for ${domain} (self-signed origin cert; CF edge handles visitors)"
     log_sub "Note: CF must be in 'Full' mode (not 'Full strict'). For 'Full strict',"
     log_sub "  generate a Cloudflare Origin Certificate from CF dashboard and replace files in:"
     log_sub "  ${ssl_dir}/{fullchain,privkey}.pem"
+}
+
+# ---------------------------------------------------------------------------
+# Post-cert dispatcher — once a cert exists at $cert_dir, decide whether the
+# domain belongs to a WordPress site or a Docker app, and emit the right HTTPS
+# server block accordingly. Also persists SSL_ENABLED/SSL_ISSUED_AT to the
+# matching registry entry.
+#
+# Args: <domain> <cert_dir> <ssl_type:letsencrypt|self-signed>
+# ---------------------------------------------------------------------------
+_ssl_post_cert_apply() {
+    local domain="$1" cert_dir="$2" ssl_type="$3"
+
+    # Site (WordPress) — original code path
+    if site_exists "$domain"; then
+        nginx_enable_https "$domain" "$cert_dir"
+        _ssl_post_install_wp "$domain"
+        site_set "$domain" "SSL_ENABLED"   "$ssl_type"
+        site_set "$domain" "SSL_ISSUED_AT" "$(date '+%Y-%m-%d')"
+        return 0
+    fi
+
+    # App (Docker) — proxy HTTPS block
+    if [[ -f "$MWP_DIR/lib/app-registry.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/app-registry.sh"
+        local app_name
+        app_name="$(app_find_by_domain "$domain" 2>/dev/null || true)"
+        if [[ -n "$app_name" ]]; then
+            # shellcheck source=/dev/null
+            source "$MWP_DIR/lib/multi-app.sh"
+            app_nginx_enable_https "$app_name" "$domain" "$cert_dir"
+            app_set "$app_name" "SSL_ENABLED"   "$ssl_type"
+            app_set "$app_name" "SSL_ISSUED_AT" "$(date '+%Y-%m-%d')"
+            return 0
+        fi
+    fi
+
+    # Fallback: panel domain or unknown — leave existing vhost as-is, nginx
+    # already reloaded by certbot --nginx with cert paths inserted in place.
+    log_warn "Domain '$domain' not in site/app registry — HTTPS auto-block skipped."
+    log_sub  "If this is the panel placeholder, that's expected (cert is on disk; vhost untouched)."
 }
 
 # ---------------------------------------------------------------------------
@@ -167,10 +199,23 @@ ssl_issue_self_signed() {
 ssl_status() {
     local domain="${1:-}"
     [[ -z "$domain" ]] && die "Usage: mwp ssl status <domain>"
-    site_exists "$domain" || die "Site '$domain' not found."
 
     local ssl_type cert_file
-    ssl_type="$(site_get "$domain" SSL_ENABLED)"
+    if site_exists "$domain"; then
+        ssl_type="$(site_get "$domain" SSL_ENABLED)"
+    elif [[ -f "$MWP_DIR/lib/app-registry.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/app-registry.sh"
+        local _app_name
+        _app_name="$(app_find_by_domain "$domain" 2>/dev/null || true)"
+        if [[ -n "$_app_name" ]]; then
+            ssl_type="$(app_get "$_app_name" SSL_ENABLED)"
+        else
+            die "Domain '$domain' not found in site or app registry."
+        fi
+    else
+        die "Domain '$domain' not found."
+    fi
 
     case "$ssl_type" in
         letsencrypt|yes)
