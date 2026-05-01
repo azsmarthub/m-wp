@@ -343,7 +343,12 @@ app_exec() {
 
     local container
     container="$(app_get "$name" CONTAINER)"
-    exec docker exec -it "$container" "$@"
+    # -t (allocate TTY) only when our own stdin IS a TTY. Without this guard,
+    # `mwp app exec` over a non-interactive SSH / cron / CI pipe dies with:
+    #   "cannot enable tty mode on non tty input"
+    local docker_flags=( exec -i )
+    [[ -t 0 ]] && docker_flags+=( -t )
+    exec docker "${docker_flags[@]}" "$container" "$@"
 }
 
 app_shell() {
@@ -356,6 +361,9 @@ app_shell() {
 
     local container
     container="$(app_get "$name" CONTAINER)"
+    # A shell is useless without a TTY — refuse early with a clear hint
+    # instead of letting docker emit its cryptic non-tty error.
+    [[ -t 0 ]] || die "mwp app shell needs an interactive terminal. Use: mwp app exec $name -- <cmd>"
     # Try bash first, fall back to sh — alpine images don't ship bash.
     if docker exec -it "$container" sh -c 'command -v bash >/dev/null 2>&1'; then
         exec docker exec -it "$container" bash
