@@ -3,7 +3,13 @@
 # Sets up: Nginx, PHP, MariaDB, Redis, WP-CLI, UFW, Fail2ban
 # Usage: bash install.sh
 
-if [[ ! -t 0 ]]; then
+# When stdin is not a TTY (e.g. `curl | bash` from a real shell session),
+# try to grab the user's terminal back so prompts still work. In a fully
+# non-interactive context (SSH BatchMode, systemd unit, CI) /dev/tty doesn't
+# exist — we skip silently. For scripted installs, set MWP_NONINTERACTIVE=1
+# explicitly: that bypasses both prompts (panel URL + start-confirm) without
+# depending on TTY tricks.
+if [[ "${MWP_NONINTERACTIVE:-0}" != "1" && ! -t 0 ]]; then
     exec 0</dev/tty 2>/dev/null || true
 fi
 
@@ -219,14 +225,80 @@ NGINXCONF
     log_sub "Nginx $(nginx -v 2>&1 | grep -o '[0-9.]*') ready (multi-site config applied)"
 }
 
+# ---------------------------------------------------------------------------
+# Try ondrej/php PPA via Launchpad. Returns 0 if package php<ver>-cli becomes
+# available, 1 otherwise. Cleans up after itself on failure so a later
+# fallback (Sury, native) doesn't see stale apt sources.
+# ---------------------------------------------------------------------------
+_step_php_try_ondrej_ppa() {
+    local want="$1"
+    log_sub "Adding PHP PPA (ondrej/php on Launchpad)..."
+    apt_install software-properties-common
+    if ! add-apt-repository -y ppa:ondrej/php 2>&1 | tail -2; then
+        log_sub "Launchpad PPA add failed."
+        rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php-*.{list,sources} 2>/dev/null
+        return 1
+    fi
+    apt-get update -qq 2>&1 | tail -3 || true
+    if apt-cache policy "php${want}-cli" 2>/dev/null | grep -q "Candidate: [0-9]"; then
+        log_sub "Launchpad PPA active — php${want} available."
+        return 0
+    fi
+    log_sub "Launchpad PPA added but php${want} not visible (CDN flaky?)."
+    rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php-*.{list,sources} 2>/dev/null
+    apt-get update -qq 2>&1 | tail -1 || true
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Fallback: same package set, mirrored at packages.sury.org (Fastly CDN).
+# Same maintainer (Ondřej Surý). Returns 0 if php<ver>-cli becomes available.
+# ---------------------------------------------------------------------------
+_step_php_try_sury() {
+    local want="$1"
+    log_sub "Falling back to packages.sury.org..."
+    install -d -m 0755 /etc/apt/keyrings
+    if ! curl -fsSL --max-time 10 https://packages.sury.org/php/apt.gpg \
+            -o /etc/apt/keyrings/sury-php.gpg; then
+        log_sub "Cannot reach packages.sury.org for the GPG key."
+        return 1
+    fi
+    chmod 644 /etc/apt/keyrings/sury-php.gpg
+    cat > /etc/apt/sources.list.d/sury-php.list <<SURY
+deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ \
+$( . /etc/os-release && echo "${VERSION_CODENAME}" ) main
+SURY
+    if ! apt-get update -qq 2>&1 | tail -3 | grep -qiE "sury|http"; then
+        :
+    fi
+    if apt-cache policy "php${want}-cli" 2>/dev/null | grep -q "Candidate: [0-9]"; then
+        log_sub "sury.org active — php${want} available."
+        return 0
+    fi
+    log_sub "sury.org added but php${want} not visible (Fastly edge block?)."
+    rm -f /etc/apt/sources.list.d/sury-php.list /etc/apt/keyrings/sury-php.gpg
+    apt-get update -qq 2>&1 | tail -1 || true
+    return 1
+}
+
 step_php() {
+    # Preferred PHP version (latest stable from ondrej PPA). If neither
+    # Launchpad nor sury.org is reachable, fall back to whatever ship in
+    # Ubuntu noble's main repo (currently php8.3) so the install still
+    # completes — proven necessary on 2026-05-01 when both Launchpad and
+    # Sury were edge-blocked from a Contabo VPS for hours.
     local default_php="8.5"
 
     if ! command -v php >/dev/null 2>&1; then
-        log_sub "Adding PHP PPA (ondrej/php)..."
-        apt_install software-properties-common
-        add-apt-repository -y ppa:ondrej/php 2>&1 | tail -2 || true
-        apt-get update -qq 2>&1 | tail -1 || true
+        if _step_php_try_ondrej_ppa "$default_php"; then
+            : # PPA works — keep default_php="8.5"
+        elif _step_php_try_sury "$default_php"; then
+            :
+        else
+            log_warn "Both ondrej PPA (Launchpad) and packages.sury.org are unreachable."
+            log_warn "Falling back to Ubuntu native PHP 8.3 (php8.5 will be missing)."
+            default_php="8.3"
+        fi
     fi
 
     log_sub "Installing PHP ${default_php} + extensions..."
@@ -568,9 +640,21 @@ main() {
     preflight_checks
 
     # Collect optional inputs BEFORE automated steps (no interruptions mid-install)
-    step_panel_url_collect
-
-    confirm "Start server setup?" || exit 0
+    if [[ "${MWP_NONINTERACTIVE:-0}" == "1" ]]; then
+        log_info "MWP_NONINTERACTIVE=1 — skipping panel URL prompt + start confirm."
+        # Optional: caller can still preset panel via env
+        if [[ -n "${MWP_PANEL_DOMAIN:-}" ]]; then
+            if validate_domain "$MWP_PANEL_DOMAIN"; then
+                server_set "PANEL_DOMAIN" "$MWP_PANEL_DOMAIN"
+                log_sub "Panel hostname (from env): $MWP_PANEL_DOMAIN"
+            else
+                log_warn "MWP_PANEL_DOMAIN invalid — ignored."
+            fi
+        fi
+    else
+        step_panel_url_collect
+        confirm "Start server setup?" || exit 0
+    fi
 
     local start_time
     start_time="$(date +%s)"

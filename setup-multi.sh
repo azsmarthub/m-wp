@@ -101,4 +101,7 @@ ok "Scripts executable"
 # Run server setup
 printf '\n%b  Starting server setup...%b\n\n' "$BOLD" "$NC"
 export MWP_DIR="$MWP_INSTALL_DIR"
+# MWP_NONINTERACTIVE + MWP_PANEL_DOMAIN env vars propagate naturally via exec.
+# Use them for fully-scripted installs:
+#   MWP_NONINTERACTIVE=1 bash <(curl -fsSL .../setup-multi.sh)
 exec bash "$MWP_INSTALL_DIR/multi/install.sh"
