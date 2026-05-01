@@ -54,6 +54,37 @@ else
     die "Cannot detect OS"
 fi
 
+# Wait for cloud-init / unattended-upgrades to release the apt lock.
+# Many VPS providers (Contabo, DigitalOcean, Hetzner) auto-run apt-get
+# dist-upgrade at first boot — typically takes 5-15 minutes. If we hit
+# `apt-get` while it's still running, we get
+#   "E: Could not get lock /var/lib/dpkg/lock-frontend"
+# and the whole install dies. Wait up to 20 minutes for the lock to free
+# itself. The wait shows a heartbeat every 30s so the operator can see
+# what's happening.
+info "Checking apt lock (cloud-init / unattended-upgrades may be running)..."
+apt_lock_wait_max=1200    # 20 minutes
+apt_lock_waited=0
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+    || fuser /var/lib/dpkg/lock         >/dev/null 2>&1 \
+    || pgrep -f unattended-upgr         >/dev/null 2>&1; do
+    if (( apt_lock_waited >= apt_lock_wait_max )); then
+        die "apt lock still held after ${apt_lock_wait_max}s — investigate manually:
+       systemctl status unattended-upgrades
+       fuser -v /var/lib/dpkg/lock-frontend"
+    fi
+    if (( apt_lock_waited == 0 )); then
+        info "apt is busy (cloud-init upgrading new VPS) — waiting up to 20 min..."
+    elif (( apt_lock_waited % 30 == 0 )); then
+        # Show what apt is actually doing every 30s
+        last_log_line=$(tail -1 /var/log/apt/term.log 2>/dev/null | head -c 100)
+        info "  [${apt_lock_waited}s waited] ${last_log_line:-still busy}"
+    fi
+    sleep 5
+    apt_lock_waited=$((apt_lock_waited + 5))
+done
+[[ $apt_lock_waited -gt 0 ]] && ok "apt lock released after ${apt_lock_waited}s"
+
 # Refresh apt cache and upgrade existing packages BEFORE doing anything else.
 # A reinstalled VPS often ships with stale apt sources or pending security
 # updates, which can cause later steps (nginx repo, ondrej PPA, MariaDB repo)
