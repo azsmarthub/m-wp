@@ -85,6 +85,12 @@ ${BOLD}SSH hardening:${NC}
   mwp ssh harden                   Disable password auth (key-only) — needs ≥1 root key
   mwp ssh unharden                 Revert to distro default (password+key)
 
+${BOLD}Cloudflare restriction (when ALL sites are CF-proxied):${NC}
+  mwp cf status                    Show restrict state + cached CF IP ranges
+  mwp cf restrict-on               UFW deny 80/443 except CF IPs + nginx real-IP
+  mwp cf restrict-off              Restore default 80/443 ALLOW + nginx default
+  mwp cf refresh                   Re-fetch CF IP ranges (auto: weekly cron)
+
 ${BOLD}Backup:${NC}
   mwp backup full <domain>         Full backup (files + DB)
   mwp backup db   <domain>         Database-only backup
@@ -431,6 +437,18 @@ main() {
                 harden)    ssh_harden ;;
                 unharden)  ssh_unharden ;;
                 *) cmd_help; die "Unknown ssh subcommand: $sub" ;;
+            esac
+            ;;
+        cf)
+            local sub="${1:-status}"
+            shift || true
+            source "$MWP_DIR/lib/multi-cf.sh"
+            case "$sub" in
+                status)        cf_status ;;
+                restrict-on|restrict|on)   cf_restrict_on ;;
+                restrict-off|unrestrict|off) cf_restrict_off ;;
+                refresh)       cf_refresh ;;
+                *) cmd_help; die "Unknown cf subcommand: $sub" ;;
             esac
             ;;
         panel)
