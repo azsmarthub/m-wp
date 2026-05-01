@@ -137,7 +137,12 @@ _cf_apply_ufw_rules() {
         n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 \
              | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
-        yes y | ufw delete "$n" >/dev/null 2>&1 || break
+        # `printf 'y\n'` instead of `yes y` — `yes` writes infinitely and gets
+        # SIGPIPE'd as soon as `ufw delete` closes stdin after reading one 'y'.
+        # Under `set -o pipefail` that SIGPIPE makes the pipeline exit non-zero,
+        # which trips the `|| break` and silently exits the loop after deleting
+        # exactly one rule. printf sends exactly one line then EOF cleanly.
+        printf 'y\n' | ufw delete "$n" >/dev/null 2>&1 || break
     done
 
     # Wipe default 80/443 ALLOW ANYWHERE rules. Match end-of-line so we don't
@@ -149,7 +154,12 @@ _cf_apply_ufw_rules() {
         n="$(ufw status numbered 2>/dev/null | grep -E "$pattern" | head -1 \
              | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
-        yes y | ufw delete "$n" >/dev/null 2>&1 || break
+        # `printf 'y\n'` instead of `yes y` — `yes` writes infinitely and gets
+        # SIGPIPE'd as soon as `ufw delete` closes stdin after reading one 'y'.
+        # Under `set -o pipefail` that SIGPIPE makes the pipeline exit non-zero,
+        # which trips the `|| break` and silently exits the loop after deleting
+        # exactly one rule. printf sends exactly one line then EOF cleanly.
+        printf 'y\n' | ufw delete "$n" >/dev/null 2>&1 || break
     done
 
     # Add CF-only rules (one per CIDR — UFW doesn't aggregate)
@@ -248,7 +258,12 @@ cf_restrict_off() {
         n="$(ufw status numbered 2>/dev/null | grep "mwp-cf" | head -1 \
              | grep -oE '\[\s*[0-9]+\s*\]' | tr -d '[ ]')"
         [[ -z "$n" ]] && break
-        yes y | ufw delete "$n" >/dev/null 2>&1 || break
+        # `printf 'y\n'` instead of `yes y` — `yes` writes infinitely and gets
+        # SIGPIPE'd as soon as `ufw delete` closes stdin after reading one 'y'.
+        # Under `set -o pipefail` that SIGPIPE makes the pipeline exit non-zero,
+        # which trips the `|| break` and silently exits the loop after deleting
+        # exactly one rule. printf sends exactly one line then EOF cleanly.
+        printf 'y\n' | ufw delete "$n" >/dev/null 2>&1 || break
         count=$(( count + 1 ))
     done
 
