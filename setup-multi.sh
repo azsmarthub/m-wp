@@ -67,7 +67,12 @@ apt_lock_wait_max=1200    # 20 minutes
 apt_lock_waited=0
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
     || fuser /var/lib/dpkg/lock         >/dev/null 2>&1 \
-    || pgrep -f unattended-upgr         >/dev/null 2>&1; do
+    || pgrep -f "unattended-upgrade --|unattended-upgrade$" >/dev/null 2>&1; do
+    # NOTE: pgrep pattern matches ONLY the actual `unattended-upgrade` runner
+    # process, NOT `unattended-upgrade-shutdown --wait-for-signal` (which
+    # never exits — it sits waiting for SIGTERM at shutdown — and does NOT
+    # hold the apt lock). Matching the shutdown-wait process would loop us
+    # forever even after apt has finished.
     if (( apt_lock_waited >= apt_lock_wait_max )); then
         die "apt lock still held after ${apt_lock_wait_max}s — investigate manually:
        systemctl status unattended-upgrades
