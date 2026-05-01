@@ -431,6 +431,47 @@ step_isolation() {
     isolation_global_apply
 }
 
+# ---------------------------------------------------------------------------
+# Auto security updates — apply Ubuntu security patches without manual touch.
+# Critical for landing kernel CVE fixes (e.g. CVE-2026-31431 Copy Fail) and
+# nginx/openssl/php emergency patches without operator intervention.
+#
+# Reboot at 04:00 if a kernel patch requires it. WithUsers=false means an
+# admin SSH session blocks the reboot — they'll see the pending-reboot flag
+# in MOTD and reboot manually instead. Acceptable: the most common case is
+# nobody logged in at 4am, which reboots cleanly.
+# ---------------------------------------------------------------------------
+step_auto_security_updates() {
+    apt_install unattended-upgrades apt-listchanges
+
+    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AUTOUP'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+AUTOUP
+
+    cat > /etc/apt/apt.conf.d/52unattended-upgrades-mwp <<'CONF'
+# mwp — auto-apply security updates only (not feature upgrades)
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Package-Blacklist {};
+Unattended-Upgrade::DevRelease "auto";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+Unattended-Upgrade::Mail "";
+CONF
+
+    systemctl enable unattended-upgrades >/dev/null 2>&1 || true
+    systemctl restart unattended-upgrades >/dev/null 2>&1 || true
+    log_sub "Security updates: auto-apply daily, reboot 04:00 if kernel patched"
+}
+
 # Phase 1: collect input only (called BEFORE nginx is installed)
 step_panel_url_collect() {
     local panel_domain=""
@@ -534,16 +575,17 @@ main() {
     local start_time
     start_time="$(date +%s)"
 
-    run_step 1 10 "System preparation"    step_system_prep
-    run_step 2 10 "Installing Nginx"      step_nginx
-    run_step 3 10 "Installing PHP 8.5"    step_php
-    run_step 4 10 "Installing MariaDB"    step_mariadb
-    run_step 5 10 "Installing Redis"      step_redis
-    run_step 6 10 "Installing WP-CLI"     step_wpcli
-    run_step 7 10 "Installing Certbot"    step_certbot
-    run_step 8 10 "Firewall + Fail2ban"   step_firewall
-    run_step 9 10 "Isolation hardening"   step_isolation
-    run_step 10 10 "Panel URL setup"      step_panel_url_apply
+    run_step 1  11 "System preparation"     step_system_prep
+    run_step 2  11 "Installing Nginx"       step_nginx
+    run_step 3  11 "Installing PHP 8.5"     step_php
+    run_step 4  11 "Installing MariaDB"     step_mariadb
+    run_step 5  11 "Installing Redis"       step_redis
+    run_step 6  11 "Installing WP-CLI"      step_wpcli
+    run_step 7  11 "Installing Certbot"     step_certbot
+    run_step 8  11 "Firewall + Fail2ban"    step_firewall
+    run_step 9  11 "Auto security updates"  step_auto_security_updates
+    run_step 10 11 "Isolation hardening"    step_isolation
+    run_step 11 11 "Panel URL setup"        step_panel_url_apply
     step_cli
 
     print_summary "$start_time"

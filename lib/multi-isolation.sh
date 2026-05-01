@@ -16,8 +16,44 @@ isolation_global_apply() {
     # Harden /etc/mwp (state dir)
     chmod 700 "$MWP_STATE_DIR"
     chmod 700 "$MWP_SITES_DIR"
+    [[ -d "$MWP_APPS_DIR" ]] && chmod 700 "$MWP_APPS_DIR"
     chmod 600 "$MWP_SERVER_CONF" 2>/dev/null || true
     log_sub "/etc/mwp permissions hardened (root-only)"
+
+    isolation_disable_algif
+}
+
+# ---------------------------------------------------------------------------
+# CVE-2026-31431 "Copy Fail" mitigation — disable algif_aead kernel module.
+#
+# The bug is a logic flaw in the algif_aead kernel crypto interface that lets
+# any unprivileged local user trigger a 4-byte controlled write into the page
+# cache of any readable file → edit a setuid binary → root in seconds.
+# Affects every Linux distro shipped since 2017 (Ubuntu 24.04 included).
+# Ubuntu 26.04+ kernels are not affected.
+#
+# Userspace crypto via AF_ALG is rare (mostly fuzzers and a few HSM tools);
+# blacklisting is safe for a typical web/app server.
+# ---------------------------------------------------------------------------
+isolation_disable_algif() {
+    local conf="/etc/modprobe.d/mwp-disable-algif.conf"
+    if [[ ! -f "$conf" ]]; then
+        cat > "$conf" <<'MODPROBE'
+# mwp — CVE-2026-31431 "Copy Fail" mitigation
+# Disable userspace AF_ALG crypto interface — used by no normal web workload.
+install algif_aead /bin/false
+install algif_skcipher /bin/false
+install algif_hash /bin/false
+install algif_rng /bin/false
+MODPROBE
+        chmod 644 "$conf"
+        log_sub "algif_* kernel modules blacklisted (CVE-2026-31431 Copy Fail)"
+    fi
+    # Unload if currently loaded — best effort, kernel may say "in use"
+    rmmod algif_aead     2>/dev/null || true
+    rmmod algif_skcipher 2>/dev/null || true
+    rmmod algif_hash     2>/dev/null || true
+    rmmod algif_rng      2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -90,6 +126,16 @@ isolation_check() {
     local home_perm
     home_perm="$(stat -c '%a' /home 2>/dev/null)"
     _iso_check "/home permissions" "$home_perm" "711"
+
+    # CVE-2026-31431 — algif_aead must be blacklisted
+    if [[ -f /etc/modprobe.d/mwp-disable-algif.conf ]] && \
+       ! lsmod 2>/dev/null | grep -q '^algif_aead'; then
+        printf '  %b✔%b  %-35s blacklisted + not loaded\n' "$GREEN" "$NC" "algif_aead (CVE-2026-31431)"
+        pass=$(( pass + 1 ))
+    else
+        printf '  %b✗%b  %-35s NOT mitigated — run install.sh or rmmod algif_aead\n' "$RED" "$NC" "algif_aead (CVE-2026-31431)"
+        fail=$(( fail + 1 ))
+    fi
 
     # Site home dir permissions
     local site_home_perm
