@@ -90,6 +90,11 @@ ${BOLD}Backup:${NC}
   mwp backup db   <domain>         Database-only backup
   mwp backup all                   Backup all sites
   mwp restore     <domain> <file>  Restore from backup
+  mwp backup remote setup          Configure offsite (rclone wizard: B2/S3/GDrive/SFTP)
+  mwp backup remote set <r:path>   Mark <remote>:<path> as active offsite target
+  mwp backup remote status         Show config + last upload + remote disk usage
+  mwp backup remote list [domain]  List remote archives
+  mwp backup remote pull <name>    Download a remote archive into /tmp
 
 ${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
   mwp docker install               Install Docker engine + nginx WS support
@@ -316,6 +321,22 @@ cmd_backup() {
                 d="$(grep "^DOMAIN=" "$conf" | cut -d= -f2-)"
                 backup_site "$d" "full"
             done
+            ;;
+        remote)
+            local rsub="${1:-status}"
+            shift || true
+            source "$MWP_DIR/lib/multi-backup-remote.sh"
+            case "$rsub" in
+                install) backup_remote_install ;;
+                setup)   backup_remote_setup ;;
+                set)     backup_remote_set "${1:-}" ;;
+                unset)   backup_remote_unset ;;
+                status)  backup_remote_status ;;
+                push)    backup_remote_push "${1:-}" ;;
+                list|ls) backup_remote_list "${1:-}" ;;
+                pull)    backup_remote_pull "${1:-}" ;;
+                *) cmd_help; die "Unknown backup remote subcommand: $rsub" ;;
+            esac
             ;;
         *) cmd_help; die "Unknown backup subcommand: $sub" ;;
     esac

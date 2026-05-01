@@ -74,6 +74,18 @@ backup_site() {
     # Keep only last 7 full backups per site
     _backup_rotate "$backup_dir" "$domain" "full" 7
     _backup_rotate "$backup_dir" "$domain" "db" 14
+
+    # Auto-push to offsite if configured. Failure does NOT fail the local
+    # backup — local copy is already saved; offsite is best-effort. Operator
+    # sees the warning and can retry: `mwp backup remote push <archive>`.
+    if [[ -n "$(server_get "BACKUP_REMOTE" 2>/dev/null)" ]]; then
+        if [[ -f "$MWP_DIR/lib/multi-backup-remote.sh" ]]; then
+            # shellcheck source=/dev/null
+            source "$MWP_DIR/lib/multi-backup-remote.sh"
+            backup_remote_push "$archive" || \
+                log_warn "Offsite push failed for $archive — local copy intact."
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------------------
