@@ -219,8 +219,10 @@ cmd_site() {
     _load_site_libs
 
     case "$sub" in
-        create)  require_root; site_create "${1:-}" ;;
-        delete)  require_root; site_delete "${1:-}" ;;
+        # Pass "$@" not "${1:-}" — site_create accepts flags like --allow-non-cf
+        # after the domain. Same for delete (in case future flags).
+        create)  require_root; site_create "$@" ;;
+        delete)  require_root; site_delete "$@" ;;
         info)    registry_print_info "${1:-}" ;;
         enable)  require_root; site_enable "${1:-}" ;;
         disable) require_root; site_disable "${1:-}" ;;
