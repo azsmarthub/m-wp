@@ -501,6 +501,20 @@ F2B
 step_isolation() {
     source "$MWP_DIR/lib/multi-isolation.sh"
     isolation_global_apply
+
+    # Install the always-on CF IP map (real_ip + geo $mwp_is_cf_source). Each
+    # vhost decides locally whether to enforce CF-only via the {{CF_GUARD}}
+    # template var. Refresh runs weekly via the cron installed below.
+    source "$MWP_DIR/lib/multi-cf.sh"
+    cf_refresh
+
+    # Always install the weekly refresh cron (it just updates the geo block;
+    # safe even if no sites are CF-proxied yet).
+    cat > /etc/cron.weekly/mwp-cf-refresh <<'CRON'
+#!/bin/sh
+/usr/local/bin/mwp cf refresh >/var/log/mwp/cf-refresh.log 2>&1
+CRON
+    chmod 755 /etc/cron.weekly/mwp-cf-refresh
 }
 
 # ---------------------------------------------------------------------------

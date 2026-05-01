@@ -14,6 +14,12 @@ server {
     listen [::]:80;
     server_name {{DOMAIN}} www.{{DOMAIN}};
 
+    # Per-domain CF guard (auto-injected by mwp at site_create time)
+    # When this domain is CF-proxied, only requests sourced from CF IP ranges
+    # reach this server block; direct-IP probes get HTTP 444 (close, no body).
+    # When this domain is direct-DNS, the guard is empty and traffic flows.
+    {{CF_GUARD}}
+
     # Redirect to HTTPS (activated after SSL issued)
     # return 301 https://$host$request_uri;
 

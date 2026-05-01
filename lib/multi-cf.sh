@@ -33,6 +33,36 @@ CF_NGINX_SNIPPET="/etc/nginx/conf.d/mwp-cf-realip.conf"
 CF_REFRESH_CRON="/etc/cron.weekly/mwp-cf-refresh"
 
 # ---------------------------------------------------------------------------
+# CF guard string used in vhost templates. Helper for site_create/app_create:
+# echo the right `if (...) { return 444; }` line for CF-proxied domains, or
+# empty for direct-DNS domains. nginx_render then substitutes {{CF_GUARD}}.
+#
+# Returns the literal CF guard line on stdout. Caller decides what domain
+# this applies to before calling.
+# ---------------------------------------------------------------------------
+cf_guard_for_cf_proxied() {
+    printf 'if ($mwp_is_cf_source = 0) { return 444; }'
+}
+
+cf_guard_empty() {
+    printf '# (direct-DNS domain — no CF guard)'
+}
+
+# Decide CF guard based on a domain's current DNS. Echoes the appropriate
+# nginx snippet to stdout. Used by site_create + app_create at vhost render.
+cf_guard_for_domain() {
+    local domain="$1"
+    local apex_ip
+    apex_ip="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
+                | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+    if [[ -n "$apex_ip" ]] && is_cloudflare_ip "$apex_ip"; then
+        cf_guard_for_cf_proxied
+    else
+        cf_guard_empty
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Fetch + cache CF IP ranges. Returns 0 if successful, 1 if upstream unreachable.
 # ---------------------------------------------------------------------------
 cf_refresh() {
@@ -60,11 +90,15 @@ cf_refresh() {
     server_set "CF_IPS_REFRESHED" "$(date '+%Y-%m-%d %H:%M:%S')"
     log_success "CF IPs refreshed: $(wc -l < "$CF_IPS_V4_FILE") IPv4, $(wc -l < "$CF_IPS_V6_FILE" 2>/dev/null || echo 0) IPv6 ranges."
 
-    # If restriction is currently on, re-apply UFW rules with new ranges
+    # ALWAYS apply nginx map (real_ip + geo block) — per-vhost CF guard is
+    # part of the always-on protection model. UFW global lockdown is just a
+    # bonus paranoid mode on top.
+    _cf_apply_nginx_realip
+
+    # If UFW restriction is currently on, refresh those rules too with new ranges
     if [[ "$(server_get "CF_RESTRICTED")" == "yes" ]]; then
-        log_sub "Restriction is on — re-applying UFW rules with fresh ranges..."
+        log_sub "UFW global lockdown is on — re-applying CF allowlist..."
         _cf_apply_ufw_rules
-        _cf_apply_nginx_realip
     fi
 }
 
@@ -187,10 +221,25 @@ _cf_apply_ufw_rules() {
 # would log + fail2ban-ban CF edge IPs, breaking the entire site for everyone.
 # ---------------------------------------------------------------------------
 _cf_apply_nginx_realip() {
-    log_sub "Updating nginx real-IP map..."
+    log_sub "Updating nginx CF-IP map (real_ip + geo)..."
+
+    # Ensure nginx.conf includes /etc/nginx/conf.d/*.conf in http {} (required
+    # for our snippet to be loaded). install.sh ships a minimal nginx.conf
+    # that only has the sites-enabled include — patch in conf.d if missing.
+    local nginx_conf="/etc/nginx/nginx.conf"
+    if [[ -f "$nginx_conf" ]] && ! grep -q "include /etc/nginx/conf.d" "$nginx_conf"; then
+        sed -i 's|^\(\s*\)include /etc/nginx/sites-enabled/\*\.conf;|\1include /etc/nginx/conf.d/*.conf;\n\1include /etc/nginx/sites-enabled/*.conf;|' \
+            "$nginx_conf"
+        log_sub "Patched nginx.conf to include /etc/nginx/conf.d/*.conf"
+    fi
+    [[ -d /etc/nginx/conf.d ]] || mkdir -p /etc/nginx/conf.d
+
     {
-        printf '# mwp — Cloudflare real-IP configuration\n'
-        printf '# Generated %s — re-run mwp cf refresh to update\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf '# mwp — Cloudflare IP map (real-IP + per-vhost source guard)\n'
+        printf '# Generated %s — re-run "mwp cf refresh" to update\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+
+        # Block 1: set_real_ip_from — so nginx logs + fail2ban see real
+        # visitor IPs (via CF-Connecting-IP header) instead of the CF edge IP
         local cidr
         while IFS= read -r cidr; do
             [[ -z "$cidr" ]] && continue
@@ -202,25 +251,47 @@ _cf_apply_nginx_realip() {
                 printf 'set_real_ip_from %s;\n' "$cidr"
             done < "$CF_IPS_V6_FILE"
         fi
-        printf '\nreal_ip_header CF-Connecting-IP;\nreal_ip_recursive on;\n'
+        printf '\nreal_ip_header CF-Connecting-IP;\nreal_ip_recursive on;\n\n'
+
+        # Block 2: geo $mwp_is_cf_source — per-request flag used by vhosts
+        # marked as CF-proxied. NOTE: $remote_addr in `geo` is the ACTUAL TCP
+        # source IP (not the X-Forwarded-For value rewritten by real_ip).
+        # That is exactly what we want — we are deciding "is this connection
+        # from CF or from a direct-IP scanner?".
+        printf 'geo $mwp_is_cf_source {\n'
+        printf '    default 0;\n'
+        while IFS= read -r cidr; do
+            [[ -z "$cidr" ]] && continue
+            printf '    %s 1;\n' "$cidr"
+        done < "$CF_IPS_V4_FILE"
+        if [[ -f "$CF_IPS_V6_FILE" ]]; then
+            while IFS= read -r cidr; do
+                [[ -z "$cidr" ]] && continue
+                printf '    %s 1;\n' "$cidr"
+            done < "$CF_IPS_V6_FILE"
+        fi
+        printf '}\n'
     } > "$CF_NGINX_SNIPPET"
     chmod 644 "$CF_NGINX_SNIPPET"
 
-    nginx -t >/dev/null 2>&1 || die "nginx config test failed after CF real-IP snippet"
+    nginx -t >/dev/null 2>&1 || die "nginx config test failed after CF map regeneration"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx
-    log_sub "Nginx will see real visitor IPs via CF-Connecting-IP header."
+    log_sub "Nginx CF map: real_ip + \$mwp_is_cf_source geo block ready."
 }
 
 # ---------------------------------------------------------------------------
 # Install weekly cron to refresh CF IPs (CF rotates ranges occasionally)
 # ---------------------------------------------------------------------------
 _cf_install_refresh_cron() {
-    cat > "$CF_REFRESH_CRON" <<'CRON'
+    # Install at install time (step_isolation) — kept as a no-op convenience
+    # here for older install paths.
+    if [[ ! -f "$CF_REFRESH_CRON" ]]; then
+        cat > "$CF_REFRESH_CRON" <<'CRON'
 #!/bin/sh
-# mwp — auto-refresh Cloudflare IP ranges and re-apply UFW + nginx rules
 /usr/local/bin/mwp cf refresh >/var/log/mwp/cf-refresh.log 2>&1
 CRON
-    chmod 755 "$CF_REFRESH_CRON"
+        chmod 755 "$CF_REFRESH_CRON"
+    fi
 }
 
 cf_restrict_on() {

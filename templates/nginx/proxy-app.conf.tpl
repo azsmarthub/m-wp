@@ -13,6 +13,9 @@ server {
     listen [::]:80;
     server_name {{DOMAIN}};
 
+    # Per-domain CF guard (auto-injected at app_create based on DNS)
+    {{CF_GUARD}}
+
     # Redirect to HTTPS (uncommented after SSL issued)
     # return 301 https://$host$request_uri;
 

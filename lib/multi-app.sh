@@ -40,7 +40,6 @@ app_create() {
     local domain="" image="" internal_port="" memory_limit=""
     local env_args=() volume_args=()
     local env_file=""
-    local allow_non_cf=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -51,7 +50,6 @@ app_create() {
             --env)       env_args+=( -e "$2" ); shift 2 ;;
             --env-file)  env_file="$2"; shift 2 ;;
             --volume|-v) volume_args+=( -v "$2" ); shift 2 ;;
-            --allow-non-cf) allow_non_cf=1; shift ;;
             *) die "Unknown option: $1" ;;
         esac
     done
@@ -72,23 +70,25 @@ app_create() {
 
     nginx_check_setup
 
-    # Same CF-restrict guard as site_create — refuse to ship a silently
-    # broken non-CF app when CF restriction is on (UFW would drop all
-    # external visitor traffic + LE ACME).
-    if [[ "$(server_get "CF_RESTRICTED")" == "yes" && $allow_non_cf -eq 0 ]]; then
-        local apex_ip
-        apex_ip="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
-                    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
-        if [[ -n "$apex_ip" ]] && ! is_cloudflare_ip "$apex_ip"; then
-            log_error "$domain DNS → $apex_ip (NOT a Cloudflare IP)."
-            log_error "CF restriction is ON — this app would be unreachable from the internet."
-            printf '\n  %bPick one before re-running:%b\n\n' "$YELLOW" "$NC"
-            printf '  1) %bCF-proxy the domain%b first, then re-run.\n' "$BOLD" "$NC"
-            printf '  2) %bDisable CF restriction%b temporarily:  mwp cf restrict-off\n' "$BOLD" "$NC"
-            printf '  3) %bForce-create anyway%b (visitors will get TCP timeout):\n' "$BOLD" "$NC"
-            printf '     mwp app create %s ... --allow-non-cf\n\n' "$name"
-            die "Refusing to create unreachable app. See options above."
+    # Per-domain CF detection (auto). See site_create for the same logic
+    # rationale. CF_PROXIED is saved into the registry so future regenerations
+    # of the vhost (e.g. after `mwp ssl issue`) stay consistent.
+    if [[ -f "$MWP_DIR/lib/multi-cf.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/multi-cf.sh"
+        [[ -f "$CF_IPS_V4_FILE" ]] || cf_refresh
+        local _cf_apex
+        _cf_apex="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
+                     | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+        if [[ -n "$_cf_apex" ]] && is_cloudflare_ip "$_cf_apex"; then
+            export CF_PROXIED="yes"
+            export CF_GUARD="$(cf_guard_for_cf_proxied)"
+        else
+            export CF_PROXIED="no"
+            export CF_GUARD="$(cf_guard_empty)"
         fi
+    else
+        export CF_GUARD=""
     fi
 
     # Default port if not specified — most Node/Next/n8n apps use 3000.
@@ -175,6 +175,7 @@ app_create() {
     APP_DATA_DIR="$data_dir" \
     APP_CONTAINER="$container_name" \
     app_registry_add "$name"
+    [[ -n "${CF_PROXIED:-}" ]] && app_set "$name" "CF_PROXIED" "$CF_PROXIED"
 
     # --- 6. SSL (best-effort) ---
     log_step 6 $total "Issuing SSL certificate"
@@ -238,6 +239,11 @@ app_nginx_enable_https() {
         return 0
     fi
 
+    local cf_guard=""
+    if [[ "$(app_get "$name" CF_PROXIED 2>/dev/null)" == "yes" ]]; then
+        cf_guard='if ($mwp_is_cf_source = 0) { return 444; }'
+    fi
+
     cat >> "$conf" <<HTTPS_BLOCK
 
 server {
@@ -245,6 +251,9 @@ server {
     listen [::]:443 ssl;
     http2 on;
     server_name ${domain};
+
+    # Per-domain CF guard (auto-injected based on registry CF_PROXIED flag)
+    ${cf_guard}
 
     ssl_certificate     ${cert_dir}/fullchain.pem;
     ssl_certificate_key ${cert_dir}/privkey.pem;

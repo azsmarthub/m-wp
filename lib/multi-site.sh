@@ -20,20 +20,8 @@ _load_site_deps() {
 site_create() {
     local domain="${1:-}"
 
-    # Optional flag: --allow-non-cf bypasses the cf-restrict warning
-    local allow_non_cf=0
-    local args=()
-    for arg in "$@"; do
-        case "$arg" in
-            --allow-non-cf) allow_non_cf=1 ;;
-            *) args+=("$arg") ;;
-        esac
-    done
-    set -- "${args[@]}"
-    domain="${1:-}"
-
     # --- Validate ---
-    [[ -z "$domain" ]] && die "Usage: mwp site create <domain> [--allow-non-cf]"
+    [[ -z "$domain" ]] && die "Usage: mwp site create <domain>"
     validate_domain "$domain" || die "Invalid domain: $domain"
     site_exists "$domain" && die "Site '$domain' already exists. Run: mwp site info $domain"
 
@@ -43,29 +31,32 @@ site_create() {
     [[ -f "$MWP_SERVER_CONF" ]] || die "Server not initialized. Run install.sh first."
     nginx_check_setup
 
-    # Pre-flight: when CF restriction is on, a non-CF domain will be
-    # UNREACHABLE from the public internet (UFW drops all non-CF :443 traffic
-    # AND LE ACME challenge will fail because LE servers aren't in CF range).
-    # Warn loudly so the operator doesn't ship a silently-broken site.
-    if [[ "$(server_get "CF_RESTRICTED")" == "yes" && $allow_non_cf -eq 0 ]]; then
-        local apex_ip
-        apex_ip="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
-                    | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
-        if [[ -n "$apex_ip" ]] && ! is_cloudflare_ip "$apex_ip"; then
-            log_error "$domain DNS → $apex_ip (NOT a Cloudflare IP)."
-            log_error "CF restriction is ON — this site would be unreachable from the internet."
-            printf '\n  %bPick one before re-running:%b\n\n' "$YELLOW" "$NC"
-            printf '  1) %bCF-proxy the domain%b first (orange-cloud in CF DNS), then re-run.\n' "$BOLD" "$NC"
-            printf '  2) %bDisable CF restriction%b temporarily:  mwp cf restrict-off\n' "$BOLD" "$NC"
-            printf '     (the site will be reachable; you can re-enable restrict only\n'
-            printf '      after ALL sites are CF-proxied).\n'
-            printf '  3) %bForce-create anyway%b (HTTP/SSL will not work for visitors):\n' "$BOLD" "$NC"
-            printf '     mwp site create %s --allow-non-cf\n\n' "$domain"
-            die "Refusing to create unreachable site. See options above."
+    # Per-domain CF detection. The CF-IP map at /etc/nginx/conf.d/mwp-cf-realip.conf
+    # is always loaded (installed by step_isolation in install.sh and refreshed
+    # weekly by cron). Each vhost decides locally whether to enforce CF-only:
+    #   - CF-proxied domain → vhost emits `if (!is_cf_source) return 444;`
+    #   - direct-DNS domain → vhost is open to all sources
+    # Both modes coexist on the same server, no operator choice required.
+    if [[ -f "$MWP_DIR/lib/multi-cf.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/multi-cf.sh"
+        [[ -f "$CF_IPS_V4_FILE" ]] || cf_refresh
+        local _cf_apex
+        _cf_apex="$( set +o pipefail; dig +short A "$domain" 2>/dev/null \
+                     | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1 )"
+        if [[ -n "$_cf_apex" ]] && is_cloudflare_ip "$_cf_apex"; then
+            export CF_PROXIED="yes"
+            export CF_GUARD="$(cf_guard_for_cf_proxied)"
+            log_sub "Domain is CF-proxied (DNS → $_cf_apex) — vhost will reject non-CF source IPs."
+        else
+            export CF_PROXIED="no"
+            export CF_GUARD="$(cf_guard_empty)"
+            [[ -n "$_cf_apex" ]] \
+                && log_sub "Domain is direct-DNS (→ $_cf_apex) — vhost open to all sources." \
+                || log_sub "Domain DNS not resolved yet — vhost open to all sources (revisit if you CF-proxy later)."
         fi
-        # apex_ip empty = DNS not resolved yet — let the existing SSL flow
-        # handle this (it already prints a "DNS not propagated" hint and
-        # creates the site without SSL).
+    else
+        export CF_GUARD=""
     fi
 
     # --- Derive variables ---
@@ -133,6 +124,7 @@ site_create() {
     # site is still registered cleanly and the user can retry `mwp ssl issue`.
     log_step 7 $total "Registering site"
     registry_add "$domain"
+    [[ -n "${CF_PROXIED:-}" ]] && site_set "$domain" "CF_PROXIED" "$CF_PROXIED"
 
     log_step 8 $total "Issuing SSL certificate"
     _site_issue_ssl_or_skip

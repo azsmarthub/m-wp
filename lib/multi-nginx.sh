@@ -112,6 +112,12 @@ nginx_enable_https() {
     web_root="$(site_get "$domain" WEB_ROOT)"
     cache_path="$(site_get "$domain" CACHE_PATH)"
 
+    # Re-detect CF status from registry so reload after restart still applies guard
+    local cf_guard=""
+    if [[ "$(site_get "$domain" CF_PROXIED 2>/dev/null)" == "yes" ]]; then
+        cf_guard='if ($mwp_is_cf_source = 0) { return 444; }'
+    fi
+
     cat >> "$conf" <<HTTPS_BLOCK
 
 server {
@@ -119,6 +125,9 @@ server {
     listen [::]:443 ssl;
     http2 on;
     server_name ${domain} www.${domain};
+
+    # Per-domain CF guard (auto-injected based on registry CF_PROXIED flag)
+    ${cf_guard}
 
     ssl_certificate     ${cert_dir}/fullchain.pem;
     ssl_certificate_key ${cert_dir}/privkey.pem;

@@ -85,11 +85,12 @@ ${BOLD}SSH hardening:${NC}
   mwp ssh harden                   Disable password auth (key-only) — needs ≥1 root key
   mwp ssh unharden                 Revert to distro default (password+key)
 
-${BOLD}Cloudflare restriction (when ALL sites are CF-proxied):${NC}
-  mwp cf status                    Show restrict state + cached CF IP ranges
-  mwp cf restrict-on               UFW deny 80/443 except CF IPs + nginx real-IP
-  mwp cf restrict-off              Restore default 80/443 ALLOW + nginx default
-  mwp cf refresh                   Re-fetch CF IP ranges (auto: weekly cron)
+${BOLD}Cloudflare protection (always-on per-domain auto):${NC}
+  mwp cf status                    Show CF map + per-site CF_PROXIED states
+  mwp cf refresh                   Re-fetch CF ranges + regenerate nginx map
+                                   (installed at server setup; cron weekly)
+  mwp cf restrict-on               (Optional) global UFW lockdown — all sites must be CF
+  mwp cf restrict-off              Disable UFW lockdown
 
 ${BOLD}Backup:${NC}
   mwp backup full <domain>         Full backup (files + DB)
