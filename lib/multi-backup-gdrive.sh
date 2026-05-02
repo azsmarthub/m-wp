@@ -27,6 +27,26 @@ _MWP_BACKUP_GDRIVE_LOADED=1
 GDRIVE_SA_DIR="/etc/mwp/gdrive-sa"
 
 # ---------------------------------------------------------------------------
+# Consume any remaining lines from stdin within a short window. Some SSH
+# clients (Termius, iTerm with broken bracketed-paste support) append a
+# literal marker like "<---End paste" AFTER a multi-line paste finishes.
+# Without draining, the next `read` picks up that marker as user input —
+# which is how a folder ended up named "<---End paste" in production.
+# Call this immediately after every `read` that may have received a paste.
+# ---------------------------------------------------------------------------
+_drain_stdin() {
+    local _junk
+    while read -r -t 0.2 _junk 2>/dev/null; do :; done
+}
+
+# Strip terminal paste-end markers from a string (defensive — drain should
+# already have caught them, but if a marker came on the SAME line as the
+# real input it survives drain).
+_strip_paste_markers() {
+    printf '%s' "$1" | sed -e 's/<---End paste.*//' -e 's/<---Begin paste.*//'
+}
+
+# ---------------------------------------------------------------------------
 # Public entry — interactive wizard
 # ---------------------------------------------------------------------------
 backup_gdrive_setup() {
@@ -43,12 +63,13 @@ backup_gdrive_setup() {
     # 1) Remote alias (rclone section name)
     local name
     printf '  Remote alias (rclone name, default: gdrive): '
-    read -r name
+    read -r name; _drain_stdin
+    name="$(_strip_paste_markers "$name")"
     name="${name:-gdrive}"
     if grep -q "^\[$name\]" /root/.config/rclone/rclone.conf 2>/dev/null; then
         log_warn "Remote '$name' already exists in rclone.conf — will be overwritten."
         printf '  Continue? (y/N): '
-        local _c; read -r _c
+        local _c; read -r _c; _drain_stdin
         [[ "${_c,,}" != "y" ]] && { log_info "Cancelled."; return 0; }
         _gdrive_remove_section "$name"
     fi
@@ -61,7 +82,8 @@ backup_gdrive_setup() {
         "$BOLD" "$NC" "$DIM" "$NC"
     printf '  Choose [1]: '
     local auth
-    read -r auth
+    read -r auth; _drain_stdin
+    auth="$(_strip_paste_markers "$auth")"
     auth="${auth:-1}"
 
     case "$auth" in
@@ -73,10 +95,33 @@ backup_gdrive_setup() {
     # 3) Folder name (the per-host subfolder is added automatically on push)
     local folder
     printf '\n  Drive folder name (default: mwp-backups): '
-    read -r folder
+    read -r folder; _drain_stdin
+    folder="$(_strip_paste_markers "$folder")"
     folder="${folder:-mwp-backups}"
 
-    # 4) Create + validate
+    # Validate folder pattern. Google Drive accepts almost any char, but a
+    # name like "<---End paste" is almost certainly a Termius/iTerm paste
+    # marker that slipped through — refuse + tell the operator to retry.
+    if [[ ! "$folder" =~ ^[A-Za-z0-9_.-][A-Za-z0-9_./-]*$ ]]; then
+        die "Folder name contains unexpected characters: '$folder'
+   This often comes from an SSH client (Termius / iTerm) that appends a
+   paste-end marker after multi-line pastes. Re-run setup and TYPE the
+   folder name manually instead of pasting."
+    fi
+
+    # 4) Confirm + create. The confirm step is here specifically so the
+    # operator sees the final folder name before we mkdir it on Drive —
+    # if the validation above somehow lets garbage through, the operator
+    # has one last chance to abort before a junk folder is created.
+    local hn
+    hn="$(hostname -f 2>/dev/null || hostname)"
+    printf '\n  About to create on Drive:\n'
+    printf '    Folder:    %s:%s\n' "$name" "$folder"
+    printf '    Per-host:  %s:%s/%s/\n' "$name" "$folder" "$hn"
+    printf '  Confirm? (y/N): '
+    local _ok; read -r _ok; _drain_stdin
+    [[ "${_ok,,}" != "y" ]] && { log_info "Cancelled."; return 0; }
+
     log_info "Creating folder $name:$folder ..."
     if ! rclone mkdir "$name:$folder" 2>&1 | tail -3; then
         die "Cannot create folder. Check Drive permissions / network."
@@ -124,11 +169,13 @@ _gdrive_setup_oauth() {
 OAUTHHELP
     printf '  Paste the JSON token here:\n  > '
     local token
-    read -r token
+    read -r token; _drain_stdin
     token="$(printf '%s' "$token" | tr -d '\r')"
+    token="$(_strip_paste_markers "$token")"
     [[ -z "$token" ]] && die "No token provided."
     [[ "$token" == "{"*"}" ]] || \
-        die "Token must be a JSON object starting with { and ending with }."
+        die "Token must be a JSON object starting with { and ending with }.
+   Got (first 80 chars): ${token:0:80}"
 
     mkdir -p /root/.config/rclone
     chmod 700 /root/.config/rclone
@@ -185,7 +232,8 @@ _gdrive_setup_sa() {
 SAHELP
     printf '  Path to Service Account JSON on this server:\n  > '
     local sa_path
-    read -r sa_path
+    read -r sa_path; _drain_stdin
+    sa_path="$(_strip_paste_markers "$sa_path")"
     [[ -z "$sa_path" ]] && die "No path provided."
     [[ -f "$sa_path" ]] || die "File not found: $sa_path"
     grep -q '"type": *"service_account"' "$sa_path" || \
