@@ -104,6 +104,14 @@ ${BOLD}Backup:${NC}
   mwp backup remote pull <name>    Download a remote archive into /tmp
   mwp backup gdrive setup          Google Drive quick setup (OAuth or Service Account)
   mwp backup verify                Coverage report — list each entity + backup age + offsite
+  mwp backup schedule list         List schedule presets (daily / every-2-days / weekly...)
+  mwp backup schedule set <preset> Install systemd timer (default: every-2-days)
+  mwp backup schedule status       Show current schedule + next run + last result
+  mwp backup schedule run          Run a scheduled backup right now
+  mwp backup schedule disable      Stop + remove the timer
+  mwp backup retention show        Show keep-counts per tier
+  mwp backup retention set daily=14 weekly=8 monthly=24
+                                   Configure per-tier retention
 
 ${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
   mwp docker install               Install Docker engine + nginx WS support
@@ -371,6 +379,65 @@ cmd_backup() {
         verify)
             # Coverage report — what's backed up, what's stale, what's missing.
             backup_verify
+            ;;
+        schedule)
+            # Scheduled backups via systemd timer. Subcommands:
+            #   list / set <preset> [custom-spec] / disable / status / run
+            #   run-internal     — entry point used by mwp-backup.service unit
+            local ssub="${1:-status}"
+            shift || true
+            source "$MWP_DIR/lib/multi-backup-schedule.sh"
+            case "$ssub" in
+                list|presets) backup_schedule_list_presets ;;
+                set)          backup_schedule_set "${1:-}" "${2:-}" ;;
+                disable|off)  backup_schedule_disable ;;
+                status|info)  backup_schedule_status ;;
+                run|run-now)  backup_schedule_run_now ;;
+                run-internal)
+                    # Called by the systemd unit. Not for interactive use.
+                    backup_all_scheduled
+                    ;;
+                *) cmd_help; die "Usage: mwp backup schedule {list|set <preset>|disable|status|run}" ;;
+            esac
+            ;;
+        retention)
+            # Configure how many backups to keep per tier.
+            #   show              — print current keep-counts
+            #   set <key>=<val>...— e.g. mwp backup retention set daily=14 weekly=8
+            local rsub="${1:-show}"
+            shift || true
+            case "$rsub" in
+                show)
+                    printf '\n  %bBackup retention (per-site, per-tier)%b\n' "$BOLD" "$NC"
+                    printf '  %s\n' "──────────────────────────────────────"
+                    local kd kw km kf
+                    kd="$(server_get BACKUP_KEEP_DAILY 2>/dev/null   || true)"; kd="${kd:-7}"
+                    kw="$(server_get BACKUP_KEEP_WEEKLY 2>/dev/null  || true)"; kw="${kw:-4}"
+                    km="$(server_get BACKUP_KEEP_MONTHLY 2>/dev/null || true)"; km="${km:-12}"
+                    kf="$(server_get BACKUP_KEEP_FULL 2>/dev/null    || true)"; kf="${kf:-7}"
+                    printf '  daily=%s   weekly=%s   monthly=%s   full(manual)=%s\n\n' \
+                        "$kd" "$kw" "$km" "$kf"
+                    ;;
+                set)
+                    require_root
+                    [[ $# -eq 0 ]] && die "Usage: mwp backup retention set daily=N [weekly=N] [monthly=N] [full=N]"
+                    local pair k v key
+                    for pair in "$@"; do
+                        k="${pair%%=*}"; v="${pair#*=}"
+                        [[ "$v" =~ ^[0-9]+$ ]] || die "Bad value: $pair (expected key=N)"
+                        case "$k" in
+                            daily)   key=BACKUP_KEEP_DAILY ;;
+                            weekly)  key=BACKUP_KEEP_WEEKLY ;;
+                            monthly) key=BACKUP_KEEP_MONTHLY ;;
+                            full)    key=BACKUP_KEEP_FULL ;;
+                            *) die "Unknown retention key: $k (use daily|weekly|monthly|full)" ;;
+                        esac
+                        server_set "$key" "$v"
+                        log_success "$key = $v"
+                    done
+                    ;;
+                *) die "Usage: mwp backup retention {show|set <key>=N ...}" ;;
+            esac
             ;;
         *) cmd_help; die "Unknown backup subcommand: $sub" ;;
     esac

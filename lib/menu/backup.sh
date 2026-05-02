@@ -26,6 +26,8 @@ menu_backup() {
     printf '  %b[b]%b  Browse all backup files         %b(restore / delete / push from one view)%b\n' \
         "$BOLD" "$NC" "$DIM" "$NC"
     _mhr
+    printf '  %b[s]%b  Schedule (auto-backup)          %b(every-2-days / weekly / etc.)%b\n' \
+        "$BOLD" "$NC" "$DIM" "$NC"
     printf '  %b[4]%b  Offsite backup (rclone)         %b— setup / status / list / pull%b\n' \
         "$BOLD" "$NC" "$DIM" "$NC"
     _mhr
@@ -84,9 +86,137 @@ menu_backup() {
         b|browse)
             _menu_backup_browse; menu_backup
             ;;
+        s|schedule)
+            _menu_backup_schedule; menu_backup
+            ;;
         0|back) menu_root ;;
         *) menu_backup ;;
     esac
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Schedule submenu — wraps lib/multi-backup-schedule.sh
+# ──────────────────────────────────────────────────────────────────────
+
+_menu_backup_schedule() {
+    [[ -n "${_MWP_BACKUP_SCHEDULE_LOADED:-}" ]] || \
+        source "$MWP_DIR/lib/multi-backup-schedule.sh"
+    _mc
+    backup_schedule_status
+    _mhr
+    printf '  %b[1]%b  Pick a preset (every-2-days / daily / weekly / ...)\n'   "$BOLD" "$NC"
+    printf '  %b[2]%b  Custom OnCalendar spec\n'                                 "$BOLD" "$NC"
+    printf '  %b[3]%b  Run scheduled backup NOW (one-shot)\n'                    "$BOLD" "$NC"
+    printf '  %b[4]%b  Disable schedule (remove timer)\n'                        "$BOLD" "$NC"
+    printf '  %b[5]%b  Configure retention (keep-counts per tier)\n'             "$BOLD" "$NC"
+    printf '  %b[6]%b  View recent log\n'                                        "$BOLD" "$NC"
+    printf '  %b[0]%b  Back\n' "$BOLD" "$NC"
+    _mprompt
+
+    case "$MENU_INPUT" in
+        1)
+            _mc; backup_schedule_list_presets
+            printf '  Preset (daily | every-2-days | twice-weekly | weekly): '
+            local _p; read -r _p
+            if [[ -n "$_p" && "$_p" != "custom" ]]; then
+                require_root; backup_schedule_set "$_p"
+                _mpause
+            fi
+            _menu_backup_schedule
+            ;;
+        2)
+            _mc
+            printf '\n  systemd OnCalendar examples:\n'
+            printf '    *-*-* 03:30:00              every day at 03:30\n'
+            printf '    Mon..Fri *-*-* 02:00:00     weekdays at 02:00\n'
+            printf '    *-*-1,15 04:00:00           1st and 15th of each month at 04:00\n\n'
+            printf '  OnCalendar spec: '
+            local _s; read -r _s
+            if [[ -n "$_s" ]]; then
+                require_root; backup_schedule_set "custom" "$_s"
+                _mpause
+            fi
+            _menu_backup_schedule
+            ;;
+        3)
+            require_root
+            _mc
+            printf '\n  This runs the FULL backup of every site right now.\n'
+            printf '  Logs append to %s.\n' "/var/log/mwp/backup-cron.log"
+            printf '  Continue? (y/N): '
+            local _c; read -r _c
+            [[ "${_c,,}" == "y" ]] && backup_schedule_run_now || log_info "Cancelled."
+            _mpause; _menu_backup_schedule
+            ;;
+        4)
+            require_root
+            printf '\n  Disable backup schedule? (y/N): '
+            local _c; read -r _c
+            [[ "${_c,,}" == "y" ]] && backup_schedule_disable || log_info "Cancelled."
+            _mpause; _menu_backup_schedule
+            ;;
+        5) _menu_backup_retention; _menu_backup_schedule ;;
+        6)
+            _mc
+            printf '\n  Last 60 lines of /var/log/mwp/backup-cron.log:\n\n'
+            tail -60 /var/log/mwp/backup-cron.log 2>/dev/null \
+                || printf '  (no log yet — schedule has not run)\n'
+            _mpause; _menu_backup_schedule
+            ;;
+        0|back) return ;;
+        *) _menu_backup_schedule ;;
+    esac
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Retention submenu
+# ──────────────────────────────────────────────────────────────────────
+_menu_backup_retention() {
+    _mc
+    local kd kw km kf
+    kd="$(server_get BACKUP_KEEP_DAILY 2>/dev/null   || true)"; kd="${kd:-7}"
+    kw="$(server_get BACKUP_KEEP_WEEKLY 2>/dev/null  || true)"; kw="${kw:-4}"
+    km="$(server_get BACKUP_KEEP_MONTHLY 2>/dev/null || true)"; km="${km:-12}"
+    kf="$(server_get BACKUP_KEEP_FULL 2>/dev/null    || true)"; kf="${kf:-7}"
+
+    printf '\n  %bRetention (per-site, per-tier)%b\n' "$BOLD" "$NC"
+    _mhr
+    printf '  daily    keep last %s\n' "$kd"
+    printf '  weekly   keep last %s\n' "$kw"
+    printf '  monthly  keep last %s\n' "$km"
+    printf '  full     keep last %s   %b(manual mwp backup full)%b\n' "$kf" "$DIM" "$NC"
+    _mhr
+    printf '  Steady-state per site: ~%d files (%dGB at 100MB/site avg)\n' \
+        $(( kd + kw + km )) $(( (kd + kw + km) / 10 ))
+    _mhr
+    printf '  %b[1]%b  Edit daily         current: %s\n' "$BOLD" "$NC" "$kd"
+    printf '  %b[2]%b  Edit weekly        current: %s\n' "$BOLD" "$NC" "$kw"
+    printf '  %b[3]%b  Edit monthly       current: %s\n' "$BOLD" "$NC" "$km"
+    printf '  %b[4]%b  Edit full(manual)  current: %s\n' "$BOLD" "$NC" "$kf"
+    printf '  %b[0]%b  Back\n' "$BOLD" "$NC"
+    _mprompt
+
+    local k v key
+    case "$MENU_INPUT" in
+        1) k=daily;   key=BACKUP_KEEP_DAILY ;;
+        2) k=weekly;  key=BACKUP_KEEP_WEEKLY ;;
+        3) k=monthly; key=BACKUP_KEEP_MONTHLY ;;
+        4) k=full;    key=BACKUP_KEEP_FULL ;;
+        0|back) return ;;
+        *) _menu_backup_retention; return ;;
+    esac
+
+    printf '  New keep-count for %s: ' "$k"
+    read -r v
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+        require_root
+        server_set "$key" "$v"
+        log_success "$key = $v"
+    else
+        log_warn "Not a number: $v"
+    fi
+    _mpause
+    _menu_backup_retention
 }
 
 # ──────────────────────────────────────────────────────────────────────

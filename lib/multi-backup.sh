@@ -9,7 +9,7 @@ _MWP_BACKUP_LOADED=1
 # Output: /home/<user>/backups/<domain>-<type>-<date>.tar.gz
 # ---------------------------------------------------------------------------
 backup_site() {
-    local domain="${1:-}" type="${2:-full}"
+    local domain="${1:-}" type="${2:-full}" tier="${3:-full}"
     [[ -z "$domain" ]] && die "Usage: mwp backup <full|db|files> <domain>"
     site_exists "$domain" || die "Site '$domain' not found."
 
@@ -20,15 +20,35 @@ backup_site() {
     db_user="$(site_get "$domain" DB_USER)"
     db_pass="$(site_get "$domain" DB_PASS)"
     backup_dir="/home/${site_user}/backups"
-    timestamp="$(date '+%Y%m%d-%H%M%S')"
+
+    # File-naming convention.
+    # Manual `mwp backup full <dom>` uses tier="full" with HHMMSS so multiple
+    # manual runs in one day don't overwrite each other.
+    # Scheduled runs pass tier=daily|weekly|monthly with date-only naming so
+    # at most one file per day per tier exists (predictable for rotation).
+    if [[ "$tier" == "full" ]]; then
+        timestamp="$(date '+%Y%m%d-%H%M%S')"
+    else
+        timestamp="$(date '+%Y%m%d')"
+    fi
+
+    # Archive slug used both for the filename "type" segment and for rotation
+    # bucket. For db/files types we keep "db"/"files" regardless of tier
+    # (tiered scheduling only applies to "full").
+    local arch_slug
+    case "$type" in
+        full)  arch_slug="$tier" ;;
+        db)    arch_slug="db" ;;
+        files) arch_slug="files" ;;
+        *)     die "Unknown backup type: $type. Use: full | db | files" ;;
+    esac
 
     mkdir -p "$backup_dir"
-
-    log_info "Backing up ${domain} (${type})..."
+    log_info "Backing up ${domain} (${type}, tier=${tier})..."
 
     case "$type" in
         full)
-            archive="${backup_dir}/${domain}-full-${timestamp}.tar.gz"
+            archive="${backup_dir}/${domain}-${arch_slug}-${timestamp}.tar.gz"
 
             # 1. Dump DB
             local db_dump="/tmp/mwp-db-${domain}-${timestamp}.sql"
@@ -48,7 +68,7 @@ backup_site() {
             ;;
 
         db)
-            archive="${backup_dir}/${domain}-db-${timestamp}.sql.gz"
+            archive="${backup_dir}/${domain}-${arch_slug}-${timestamp}.sql.gz"
             log_sub "Dumping database..."
             mysqldump --single-transaction --quick --skip-lock-tables \
                 -u "$db_user" -p"$db_pass" "$db_name" 2>/dev/null | \
@@ -56,14 +76,12 @@ backup_site() {
             ;;
 
         files)
-            archive="${backup_dir}/${domain}-files-${timestamp}.tar.gz"
+            archive="${backup_dir}/${domain}-${arch_slug}-${timestamp}.tar.gz"
             log_sub "Archiving files (no DB)..."
             tar czf "$archive" \
                 -C "$(dirname "$web_root")" "$(basename "$web_root")" \
                 2>/dev/null || die "tar archive failed"
             ;;
-
-        *) die "Unknown backup type: $type. Use: full | db | files" ;;
     esac
 
     chown "${site_user}:${site_user}" "$archive"
@@ -71,9 +89,18 @@ backup_site() {
     size="$(du -sh "$archive" 2>/dev/null | cut -f1)"
     log_success "Backup saved: $archive (${size})"
 
-    # Keep only last 7 full backups per site
-    _backup_rotate "$backup_dir" "$domain" "full" 7
-    _backup_rotate "$backup_dir" "$domain" "db" 14
+    # Tiered rotation. Each tier has its own keep-count from server.conf,
+    # so daily/weekly/monthly age out independently.
+    local keep_for_tier
+    case "$arch_slug" in
+        daily)   keep_for_tier="$(server_get BACKUP_KEEP_DAILY 2>/dev/null   || true)"; keep_for_tier="${keep_for_tier:-7}" ;;
+        weekly)  keep_for_tier="$(server_get BACKUP_KEEP_WEEKLY 2>/dev/null  || true)"; keep_for_tier="${keep_for_tier:-4}" ;;
+        monthly) keep_for_tier="$(server_get BACKUP_KEEP_MONTHLY 2>/dev/null || true)"; keep_for_tier="${keep_for_tier:-12}" ;;
+        full)    keep_for_tier="$(server_get BACKUP_KEEP_FULL 2>/dev/null    || true)"; keep_for_tier="${keep_for_tier:-7}" ;;
+        db)      keep_for_tier="$(server_get BACKUP_KEEP_DB 2>/dev/null      || true)"; keep_for_tier="${keep_for_tier:-14}" ;;
+        files)   keep_for_tier="$(server_get BACKUP_KEEP_FILES 2>/dev/null   || true)"; keep_for_tier="${keep_for_tier:-7}" ;;
+    esac
+    _backup_rotate "$backup_dir" "$domain" "$arch_slug" "$keep_for_tier"
 
     # Auto-push to offsite if configured. Failure does NOT fail the local
     # backup — local copy is already saved; offsite is best-effort. Operator
@@ -289,4 +316,76 @@ _backup_human_age() {
     elif (( sec < 86400 )); then printf '%dh' $(( sec / 3600 ))
     else                         printf '%dd' $(( sec / 86400 ))
     fi
+}
+
+# ---------------------------------------------------------------------------
+# backup_all_scheduled — entry point called by mwp-backup.service
+#
+# Decides tier from today's date:
+#   day-of-month == 1   →  monthly   (one file/site/month, kept for KEEP_MONTHLY)
+#   else day-of-week == 7 (Sun) → weekly  (kept for KEEP_WEEKLY)
+#   else                →  daily     (kept for KEEP_DAILY)
+#
+# Iterates every site in /etc/mwp/sites/ and runs backup_site full <tier>.
+# Each site's failure is logged but does NOT abort the run — partial
+# success is better than zero coverage when one site is broken.
+#
+# Output goes to STDOUT/STDERR which systemd appends to
+#   /var/log/mwp/backup-cron.log
+# ---------------------------------------------------------------------------
+backup_all_scheduled() {
+    require_root
+
+    local dom dow tier
+    dom="$(date +%-d)"     # 1-31
+    dow="$(date +%u)"      # 1-7, Mon=1 ... Sun=7
+
+    if   [[ "$dom" == "1" ]]; then tier="monthly"
+    elif [[ "$dow" == "7" ]]; then tier="weekly"
+    else                           tier="daily"
+    fi
+
+    printf '\n══════════════════════════════════════════════════════════════════\n'
+    printf '  mwp scheduled backup run\n'
+    printf '  Started:  %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf '  Tier:     %s  (dom=%s dow=%s)\n' "$tier" "$dom" "$dow"
+    printf '  Schedule: %s\n' "$(server_get BACKUP_SCHEDULE 2>/dev/null || echo '?')"
+    printf '══════════════════════════════════════════════════════════════════\n\n'
+
+    local conf domain ok=0 fail=0 start_ts end_ts
+    start_ts="$(date +%s)"
+
+    if [[ ! -d "$MWP_SITES_DIR" ]] || ! ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
+        printf '  No sites registered — nothing to back up.\n'
+        return 0
+    fi
+
+    for conf in "$MWP_SITES_DIR"/*.conf; do
+        [[ -f "$conf" ]] || continue
+        domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
+        [[ -z "$domain" ]] && continue
+        printf '\n──── %s ────\n' "$domain"
+        # Don't let one site abort the loop — capture status, log, continue.
+        if backup_site "$domain" "full" "$tier"; then
+            ok=$(( ok + 1 ))
+        else
+            fail=$(( fail + 1 ))
+            printf '  ⚠ FAILED: %s — see log above\n' "$domain"
+        fi
+    done
+
+    end_ts="$(date +%s)"
+    local elapsed=$(( end_ts - start_ts ))
+
+    printf '\n══════════════════════════════════════════════════════════════════\n'
+    printf '  Run finished: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf '  Elapsed:      %dm %ds\n' $(( elapsed / 60 )) $(( elapsed % 60 ))
+    printf '  Result:       %d ok, %d failed\n' "$ok" "$fail"
+    printf '══════════════════════════════════════════════════════════════════\n'
+
+    server_set "BACKUP_LAST_RUN"   "$(date '+%Y-%m-%d %H:%M:%S')"
+    server_set "BACKUP_LAST_TIER"  "$tier"
+    server_set "BACKUP_LAST_RESULT" "${ok}ok/${fail}fail"
+
+    [[ $fail -gt 0 ]] && return 1 || return 0
 }
