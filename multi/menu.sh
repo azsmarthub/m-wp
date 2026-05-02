@@ -103,6 +103,7 @@ ${BOLD}Backup:${NC}
   mwp backup remote list [domain]  List remote archives
   mwp backup remote pull <name>    Download a remote archive into /tmp
   mwp backup gdrive setup          Google Drive quick setup (OAuth or Service Account)
+  mwp backup verify                Coverage report — list each entity + backup age + offsite
 
 ${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
   mwp docker install               Install Docker engine + nginx WS support
@@ -366,6 +367,10 @@ cmd_backup() {
                 setup) backup_gdrive_setup ;;
                 *) cmd_help; die "Usage: mwp backup gdrive setup" ;;
             esac
+            ;;
+        verify)
+            # Coverage report — what's backed up, what's stale, what's missing.
+            backup_verify
             ;;
         *) cmd_help; die "Unknown backup subcommand: $sub" ;;
     esac

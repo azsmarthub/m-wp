@@ -195,14 +195,20 @@ _scan_external_vhosts() {
         case "$basename" in
             default|*_placeholder|*-placeholder|mwp-panel) continue ;;
         esac
-        # Pull first server_name + first root directive
+        # Pull first server_name + first root directive.
+        # Both `grep | awk | head` pipes can return non-zero when the
+        # directive is missing (e.g. pure proxy_pass vhost has no `root`,
+        # which is exactly how n8n.azsmarthub.com was silently skipped:
+        # grep no-match → exit 1 → pipefail propagate → set -e fires
+        # mid-loop → ALL remaining vhosts skipped). `|| true` on each
+        # capture turns no-match into empty string instead.
         d="$(grep -m1 -oE 'server_name\s+[^;]+' "$conf" 2>/dev/null \
-             | awk '{print $2}' | head -1)"
+             | awk '{print $2}' | head -1)" || true
         [[ -z "$d" || "$d" == "_" ]] && d="$basename"
         # Skip if this domain is in either registry
         case "$managed_domains" in *" $d "*) continue ;; esac
         root="$(grep -m1 -oE 'root\s+[^;]+' "$conf" 2>/dev/null \
-                | awk '{print $2}' | head -1)"
+                | awk '{print $2}' | head -1)" || true
         printf '%s|%s|%s\n' "$d" "${root:-}" "$(_detect_framework "${root:-}")"
     done
 }
@@ -217,13 +223,17 @@ _scan_external_vhosts() {
 
 _entities_table() {
     local filter="${1:-}"
-    local _conf _d _st _php _su _ssl _disk _st_col _idx _type _img _port
+    local _conf _d _st _php _su _ssl _st_col _idx _type _img _port
     MENU_ENTITIES=()
     _idx=0
 
+    # NOTE: DISK column removed in v0.5.6 — `du -sh /home/<user>` was the
+    # single biggest delay in this view (30 sites = 30 disk walks, ~0.5s).
+    # Disk size is shown in the per-entity detail screen instead, where
+    # paying for one du is acceptable. The _disk_usage helper still exists.
     printf '\n'
-    printf '  %b%-3s  %-30s  %-12s  %-9s  %-7s  %-3s  %s%b\n' \
-        "$BOLD" "#" "DOMAIN" "TYPE" "STATUS" "PHP/PORT" "SSL" "DISK" "$NC"
+    printf '  %b%-3s  %-30s  %-12s  %-9s  %-8s  %s%b\n' \
+        "$BOLD" "#" "DOMAIN" "TYPE" "STATUS" "PHP/PORT" "SSL" "$NC"
     _mhr
 
     # ─── 1) WordPress sites ─────────────────────────────────────────
@@ -242,7 +252,6 @@ _entities_table() {
             _idx=$(( _idx + 1 ))
             MENU_ENTITIES+=("wp:$_d")
             _ssl="$(_ssl_icon "$_d")"
-            _disk="$(_disk_usage "$_su")"
             _type="$(_detect_framework "$_wr")"
 
             case "$_st" in
@@ -251,8 +260,8 @@ _entities_table() {
                 *)        _st_col="$(printf '%b%-9s%b'      "$BOLD"  "$_st" "$NC")" ;;
             esac
 
-            printf '  %b%-3s%b  %-30s  %-12s  %s  %-7s  %-3s  %s\n' \
-                "$BOLD" "$_idx" "$NC" "$_d" "$_type" "$_st_col" "$_php" "$_ssl" "$_disk"
+            printf '  %b%-3s%b  %-30s  %-12s  %s  %-8s  %s\n' \
+                "$BOLD" "$_idx" "$NC" "$_d" "$_type" "$_st_col" "$_php" "$_ssl"
         done
     fi
 
@@ -290,12 +299,10 @@ _entities_table() {
             esac
 
             _ssl="$(_ssl_icon "$_d")"
-            _disk="$(_disk_usage "$_name")"
             _type="$(_short_image "$_img")"
 
-            # Use HOST_PORT in the PHP/PORT column for apps
-            printf '  %b%-3s%b  %-30s  %-12s  %s  %-7s  %-3s  %s\n' \
-                "$BOLD" "$_idx" "$NC" "$_d" "$_type" "$_st_col" ":$_port" "$_ssl" "$_disk"
+            printf '  %b%-3s%b  %-30s  %-12s  %s  %-8s  %s\n' \
+                "$BOLD" "$_idx" "$NC" "$_d" "$_type" "$_st_col" ":$_port" "$_ssl"
         done
     fi
 
@@ -306,10 +313,9 @@ _entities_table() {
         _idx=$(( _idx + 1 ))
         MENU_ENTITIES+=("ext:$_d")
         _ssl="$(_ssl_icon "$_d")"
-        _disk="-"
         _st_col="$(printf '%bextern. %b' "$DIM" "$NC")"
-        printf '  %b%-3s%b  %-30s  %-12s  %s  %-7s  %-3s  %s\n' \
-            "$BOLD" "$_idx" "$NC" "$_d" "${_type:-Unknown}" "$_st_col" "—" "$_ssl" "$_disk"
+        printf '  %b%-3s%b  %-30s  %-12s  %s  %-8s  %s\n' \
+            "$BOLD" "$_idx" "$NC" "$_d" "${_type:-Unknown}" "$_st_col" "—" "$_ssl"
     done < <(_scan_external_vhosts)
 
     _mhr

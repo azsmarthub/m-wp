@@ -176,3 +176,117 @@ restore_site() {
     rm -rf "$tmp_dir"
     log_success "Restore complete for ${domain}"
 }
+
+
+# ---------------------------------------------------------------------------
+# backup_verify — coverage report across WP sites + Docker apps
+#
+# For each entity, find the most recent local backup, compute age, check
+# whether it also exists offsite (single rclone lsf call cached across
+# all rows). Color-codes age: green <3d, yellow <7d, red >7d.
+#
+# Output is a table; safe to call from CLI or interactively.
+# ---------------------------------------------------------------------------
+backup_verify() {
+    printf '\n%b  Backup coverage report%b  (%s)\n'         "$BOLD" "$NC" "$(date '+%Y-%m-%d %H:%M')"
+    printf '  %s\n' "$(printf '─%.0s' {1..82})"
+    printf '  %b%-3s  %-32s  %-10s  %-16s  %-6s  %-6s  %s%b\n' \
+        "$BOLD" "#" "ENTITY" "TYPE" "LATEST BACKUP" "AGE" "SIZE" "OFFSITE" "$NC"
+    printf '  %s\n' "$(printf '─%.0s' {1..82})"
+
+    local target offsite_files=""
+    target="$(server_get BACKUP_REMOTE 2>/dev/null || true)"
+
+    # One rclone listing covers ALL rows. Cache as |-padded so a fast case-glob
+    # match works per-row without forking rclone 30 times.
+    if [[ -n "$target" ]]; then
+        local hn
+        hn="$(hostname -f 2>/dev/null || hostname)"
+        offsite_files="|$( set +o pipefail
+                          rclone lsf "$target/$hn/" 2>/dev/null \
+                            | tr '\n' '|'
+                        )" || true
+    fi
+
+    local idx=0 conf domain user bdir latest mtime now age_sec age_str date_str size fname offsite_col
+    local now_epoch
+    now_epoch="$(date +%s)"
+
+    # 1) WordPress sites
+    if [[ -d "$MWP_SITES_DIR" ]] && ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
+        for conf in "$MWP_SITES_DIR"/*.conf; do
+            [[ -f "$conf" ]] || continue
+            idx=$(( idx + 1 ))
+            domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
+            user="$(grep '^SITE_USER=' "$conf" | cut -d= -f2-)"
+            bdir="/home/${user}/backups"
+            latest=""
+            if compgen -G "${bdir}/${domain}-full-"*".tar.gz" >/dev/null 2>&1; then
+                latest="$( set +o pipefail
+                            ls -t "${bdir}/${domain}-full-"*".tar.gz" 2>/dev/null | head -1
+                          )" || true
+            fi
+            if [[ -n "$latest" && -f "$latest" ]]; then
+                mtime="$(stat -c %Y "$latest")"
+                age_sec=$(( now_epoch - mtime ))
+                age_str="$(_backup_human_age "$age_sec")"
+                size="$(du -h "$latest" 2>/dev/null | cut -f1)"
+                fname="$(basename "$latest")"
+                date_str="$(date -d @"$mtime" '+%Y-%m-%d %H:%M')"
+
+                offsite_col="—"
+                if [[ -n "$target" ]]; then
+                    case "$offsite_files" in
+                        *"|$fname|"*) offsite_col="${GREEN}✔${NC} gdrive" ;;
+                        *)              offsite_col="${RED}✗${NC}" ;;
+                    esac
+                fi
+
+                local age_col
+                if   (( age_sec > 7*86400 )); then age_col="${RED}${age_str}${NC}"
+                elif (( age_sec > 3*86400 )); then age_col="${YELLOW}${age_str}${NC}"
+                else                               age_col="${GREEN}${age_str}${NC}"
+                fi
+                printf '  %b%-3s%b  %-32s  %-10s  %-16s  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$domain" "WordPress" \
+                    "$date_str" "$age_col" "$size" "$offsite_col"
+            else
+                printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$domain" "WordPress" \
+                    "$RED" "(no backup)" "$NC" "—" "—" "—"
+            fi
+        done
+    fi
+
+    # 2) Docker apps — Phase C will add backup; for now flag as not-yet
+    if [[ -d "$MWP_APPS_DIR" ]] && ls "$MWP_APPS_DIR"/*.conf &>/dev/null 2>&1; then
+        for conf in "$MWP_APPS_DIR"/*.conf; do
+            [[ -f "$conf" ]] || continue
+            idx=$(( idx + 1 ))
+            domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
+            local name
+            name="$(basename "$conf" .conf)"
+            printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
+                "$BOLD" "$idx" "$NC" "$domain" "Docker:$name" \
+                "$YELLOW" "(Phase C todo)" "$NC" "—" "—" "⚠"
+        done
+    fi
+
+    printf '  %s\n' "$(printf '─%.0s' {1..82})"
+    if [[ -n "$target" ]]; then
+        printf '  Offsite target:  %s\n' "$target"
+    else
+        printf '  Offsite target:  %b(none configured)%b — run: mwp backup gdrive setup\n' \
+            "$YELLOW" "$NC"
+    fi
+    printf '\n'
+}
+
+# Convert seconds-since-epoch-delta into a human label like 5m / 3h / 2d / 14d.
+_backup_human_age() {
+    local sec=$1
+    if   (( sec < 3600 ));  then printf '%dm' $(( sec / 60 ))
+    elif (( sec < 86400 )); then printf '%dh' $(( sec / 3600 ))
+    else                         printf '%dd' $(( sec / 86400 ))
+    fi
+}
