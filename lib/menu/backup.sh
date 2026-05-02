@@ -88,8 +88,11 @@ _menu_backup_remote() {
     _mhr
     backup_remote_status
     _mhr
+    printf '  %b[g]%b  Google Drive quick setup  %b(OAuth or Service Account — recommended)%b\n' \
+        "$BOLD" "$NC" "$DIM" "$NC"
+    _mhr
     printf '  %b[1]%b  Install rclone (idempotent)\n'                 "$BOLD" "$NC"
-    printf '  %b[2]%b  Configure remote (interactive rclone wizard)\n' "$BOLD" "$NC"
+    printf '  %b[2]%b  Configure remote (full rclone wizard — S3/B2/SFTP/etc.)\n' "$BOLD" "$NC"
     printf '  %b[3]%b  Set active offsite target (<remote>:<path>)\n'  "$BOLD" "$NC"
     printf '  %b[4]%b  Disable offsite uploads (unset)\n'              "$BOLD" "$NC"
     printf '  %b[5]%b  List remote backups\n'                          "$BOLD" "$NC"
@@ -100,6 +103,13 @@ _menu_backup_remote() {
     _mprompt
 
     case "$MENU_INPUT" in
+        g|gdrive)
+            require_root
+            [[ -n "${_MWP_BACKUP_GDRIVE_LOADED:-}" ]] || \
+                source "$MWP_DIR/lib/multi-backup-gdrive.sh"
+            backup_gdrive_setup
+            _mpause; _menu_backup_remote
+            ;;
         1) require_root; backup_remote_install; _mpause; _menu_backup_remote ;;
         2) require_root; backup_remote_setup;   _mpause; _menu_backup_remote ;;
         3)

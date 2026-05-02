@@ -102,6 +102,7 @@ ${BOLD}Backup:${NC}
   mwp backup remote status         Show config + last upload + remote disk usage
   mwp backup remote list [domain]  List remote archives
   mwp backup remote pull <name>    Download a remote archive into /tmp
+  mwp backup gdrive setup          Google Drive quick setup (OAuth or Service Account)
 
 ${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
   mwp docker install               Install Docker engine + nginx WS support
@@ -354,6 +355,16 @@ cmd_backup() {
                 list|ls) backup_remote_list "${1:-}" ;;
                 pull)    backup_remote_pull "${1:-}" ;;
                 *) cmd_help; die "Unknown backup remote subcommand: $rsub" ;;
+            esac
+            ;;
+        gdrive)
+            # Focused Google Drive setup — bypasses the full rclone wizard.
+            local gsub="${1:-setup}"
+            shift || true
+            source "$MWP_DIR/lib/multi-backup-gdrive.sh"
+            case "$gsub" in
+                setup) backup_gdrive_setup ;;
+                *) cmd_help; die "Usage: mwp backup gdrive setup" ;;
             esac
             ;;
         *) cmd_help; die "Unknown backup subcommand: $sub" ;;

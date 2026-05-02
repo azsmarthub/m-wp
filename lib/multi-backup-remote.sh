@@ -118,7 +118,7 @@ backup_remote_push() {
     command -v rclone >/dev/null 2>&1 || die "rclone not installed. Run: mwp backup remote install"
 
     local host_path
-    host_path="${target}/$(hostname -s)"
+    host_path="${target}/$(hostname -f 2>/dev/null || hostname)"
     local size
     size="$(du -h "$file" 2>/dev/null | cut -f1)"
 
@@ -142,7 +142,7 @@ backup_remote_list() {
     [[ -z "$target" ]] && die "No remote configured. Run: mwp backup remote setup"
     command -v rclone >/dev/null 2>&1 || die "rclone not installed."
 
-    local host_path="${target}/$(hostname -s)"
+    local host_path="${target}/$(hostname -f 2>/dev/null || hostname)"
     printf '\n%b  Remote backups at %s%b\n' "$BOLD" "$host_path" "$NC"
     printf '  %s\n' "──────────────────────────────────────────────"
     if [[ -n "$filter" ]]; then
@@ -166,7 +166,7 @@ backup_remote_pull() {
     [[ -z "$target" ]] && die "No remote configured."
     command -v rclone >/dev/null 2>&1 || die "rclone not installed."
 
-    local host_path="${target}/$(hostname -s)"
+    local host_path="${target}/$(hostname -f 2>/dev/null || hostname)"
     local dest="/tmp/${archive}"
     log_info "Pulling ${archive} → ${dest}"
     rclone copy "${host_path}/${archive}" /tmp/ --progress 2>&1 | tail -3
@@ -194,12 +194,12 @@ backup_remote_status() {
         return 0
     fi
     printf '  Remote:           %s\n' "$target"
-    printf '  Hostname prefix:  %s\n' "$(hostname -s)"
+    printf '  Hostname prefix:  %s\n' "$(hostname -f 2>/dev/null || hostname)"
     [[ -n "$last" ]] && printf '  Last upload:      %s\n' "$last"
 
     # Disk usage on remote (some providers don't support this — quietly skip)
     local du_info
-    du_info="$( set +o pipefail; rclone size "${target}/$(hostname -s)" 2>/dev/null )"
+    du_info="$( set +o pipefail; rclone size "${target}/$(hostname -f 2>/dev/null || hostname)" 2>/dev/null )"
     if [[ -n "$du_info" ]]; then
         printf '  Remote usage:\n'
         printf '%s\n' "$du_info" | sed 's/^/    /'
