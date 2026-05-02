@@ -127,6 +127,15 @@ ${BOLD}Server:${NC}
   mwp panel setup                  Configure panel hostname (sv1.yourdomain.com)
   mwp panel ssl                    Issue SSL for panel domain
 
+${BOLD}Self-update:${NC}
+  mwp version                      Show local version
+  mwp version --remote             Show local + latest release on GitHub
+  mwp update                       Update to latest release tag (stable channel)
+  mwp update --main                Update to bleeding-edge origin/main
+  mwp update --tag v0.5.1          Pin to a specific tag
+  mwp update --check               Dry-run — list pending commits
+  mwp update --force               Discard local modifications + update
+
 ${BOLD}Examples:${NC}
   mwp site create example.com
   mwp php switch example.com 8.2
@@ -418,7 +427,31 @@ main() {
 
     case "$cmd" in
         help|--help|-h) cmd_help ;;
-        version|--version|-v) printf 'mwp v%s\n' "$MWP_VERSION" ;;
+        version|--version|-v)
+            # `mwp version` — local only (offline-safe, no network call)
+            # `mwp version --remote` — also queries GitHub for latest release
+            if [[ "${1:-}" == "--remote" || "${1:-}" == "-r" ]]; then
+                source "$MWP_DIR/lib/multi-update.sh"
+                update_status
+            else
+                printf 'mwp v%s\n' "$MWP_VERSION"
+            fi
+            ;;
+        update)
+            # mwp update                   → latest release tag (stable)
+            # mwp update --main            → bleeding-edge origin/main
+            # mwp update --tag v0.5.1      → pin to a specific tag
+            # mwp update --check           → dry-run (list pending commits)
+            # mwp update --force           → discard local modifications
+            # mwp update status            → same as `mwp version --remote`
+            source "$MWP_DIR/lib/multi-update.sh"
+            case "${1:-}" in
+                status|info)               update_status ;;
+                check)                     shift; update_check "$@" ;;
+                ""|--main|--tag|--force|--check) update_apply "$@" ;;
+                *) die "Usage: mwp update [status|check] [--main|--tag <tag>|--check|--force]" ;;
+            esac
+            ;;
         status)  cmd_status "$@" ;;
         sites)
             _load_site_libs; _load_menu_lib; menu_sites "${1:-}"

@@ -20,6 +20,7 @@ menu_settings() {
     printf '  %b[2]%b  Issue SSL for panel domain\n'                   "$BOLD" "$NC"
     printf '  %b[3]%b  Set default PHP version for new sites\n'        "$BOLD" "$NC"
     printf '  %b[4]%b  View /etc/mwp/server.conf\n'                    "$BOLD" "$NC"
+    printf '  %b[5]%b  Update mwp (check / install latest)\n'          "$BOLD" "$NC"
     _mhr
     printf '  %b[0]%b  Back\n' "$BOLD" "$NC"
     _mprompt
@@ -74,7 +75,47 @@ menu_settings() {
             fi
             _mpause; menu_settings
             ;;
+        5) _menu_update; menu_settings ;;
         0|b|back) menu_root ;;
         *) menu_settings ;;
+    esac
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Update submenu — wraps lib/multi-update.sh
+# ──────────────────────────────────────────────────────────────────────
+
+_menu_update() {
+    [[ -n "${_MWP_UPDATE_LOADED:-}" ]] || \
+        source "$MWP_DIR/lib/multi-update.sh"
+    _mc
+    update_status
+    _mhr
+    printf '  %b[1]%b  Check for updates (dry-run, no changes applied)\n' "$BOLD" "$NC"
+    printf '  %b[2]%b  Update to latest release (stable — recommended)\n' "$BOLD" "$NC"
+    printf '  %b[3]%b  Update to bleeding-edge main\n'                    "$BOLD" "$NC"
+    printf '  %b[4]%b  Update to a specific tag\n'                        "$BOLD" "$NC"
+    printf '  %b[0]%b  Back\n' "$BOLD" "$NC"
+    _mprompt
+
+    case "$MENU_INPUT" in
+        1) update_check;          _mpause; _menu_update ;;
+        2) require_root; update_apply;            _mpause; _menu_update ;;
+        3)
+            require_root
+            printf '\n  %bWarning: bleeding-edge can include unreleased / breaking changes.%b\n' "$YELLOW" "$NC"
+            printf '  Continue? (y/N): '
+            local _c; read -r _c
+            [[ "${_c,,}" == "y" ]] && update_apply --main || log_info "Cancelled."
+            _mpause; _menu_update
+            ;;
+        4)
+            printf '  Tag (e.g. v0.5.1): '
+            local _t; read -r _t
+            [[ -n "$_t" ]] && { require_root; update_apply --tag "$_t"; _mpause; }
+            _menu_update
+            ;;
+        0|b|back) return ;;
+        *) _menu_update ;;
     esac
 }
