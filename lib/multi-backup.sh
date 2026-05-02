@@ -94,8 +94,19 @@ backup_site() {
 _backup_rotate() {
     local dir="$1" domain="$2" type="$3" keep="$4"
     local files
+    # `ls` returns non-zero when the glob doesn't match (e.g. first-ever
+    # `mwp backup full` rotates BOTH "full" and "db" types but only the
+    # "full" file exists). Under the script-wide `set -o pipefail`, that
+    # propagates out of $(...) and `set -e` aborts backup_site BEFORE we
+    # get to the offsite-push step — silently breaking auto-upload to
+    # Google Drive / S3 / etc. on the first run.
+    #
+    # Wrap in a subshell with pipefail off + `|| true` so a no-match is
+    # treated as "nothing to rotate", not as a failure.
     # shellcheck disable=SC2012
-    files="$(ls -t "${dir}/${domain}-${type}-"* 2>/dev/null | tail -n +$(( keep + 1 )))"
+    files="$( set +o pipefail
+              ls -t "${dir}/${domain}-${type}-"* 2>/dev/null \
+                  | tail -n +$(( keep + 1 )) )" || true
     if [[ -n "$files" ]]; then
         echo "$files" | xargs rm -f
         log_sub "Rotated old ${type} backups (kept ${keep})"
