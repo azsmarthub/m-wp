@@ -140,10 +140,12 @@ backup_schedule_status() {
         printf '  Timer:        %binactive%b (configured but not running)\n' "$RED" "$NC"
     fi
 
-    # Next run + last run via systemctl (oneliner each)
+    # Next run + last run via systemctl. systemctl list-timers prints
+    # `<dow> <date> <time> <tz>  <left>  ...` — take fields 1-4 for the
+    # full human-readable timestamp (was cutting off time + timezone).
     local next last
     next="$(systemctl list-timers --all 2>/dev/null \
-            | awk '/mwp-backup.timer/ {print $1, $2; exit}')"
+            | awk '/mwp-backup.timer/ {print $1, $2, $3, $4; exit}')"
     [[ -n "$next" ]] && printf '  Next run:     %s\n' "$next"
 
     last="$(systemctl show -p LastTriggerUSec --value mwp-backup.timer 2>/dev/null)"
