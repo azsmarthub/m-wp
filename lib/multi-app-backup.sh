@@ -23,6 +23,12 @@
 [[ -n "${_MWP_APP_BACKUP_LOADED:-}" ]] && return 0
 _MWP_APP_BACKUP_LOADED=1
 
+# multi-backup.sh defines _backup_rotate which we reuse for tier rotation.
+# Source it eagerly so backup_app/restore_app can call _backup_rotate even
+# when the operator only invokes `mwp app backup` (which doesn't trigger
+# _load_site_libs). Idempotent — has its own _MWP_BACKUP_LOADED guard.
+[[ -n "${_MWP_BACKUP_LOADED:-}" ]] || source "$MWP_DIR/lib/multi-backup.sh"
+
 APP_BACKUP_ROOT="/var/lib/mwp/app-backups"
 
 # ---------------------------------------------------------------------------
