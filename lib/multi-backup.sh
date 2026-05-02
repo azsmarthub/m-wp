@@ -236,10 +236,10 @@ restore_site() {
 # ---------------------------------------------------------------------------
 backup_verify() {
     printf '\n%b  Backup coverage report%b  (%s)\n'         "$BOLD" "$NC" "$(date '+%Y-%m-%d %H:%M')"
-    printf '  %s\n' "$(printf '─%.0s' {1..82})"
-    printf '  %b%-3s  %-32s  %-10s  %-16s  %-6s  %-6s  %s%b\n' \
+    printf '  %s\n' "$(printf '─%.0s' {1..86})"
+    printf '  %b%-3s  %-32s  %-14s  %-16s  %-6s  %-6s  %s%b\n' \
         "$BOLD" "#" "ENTITY" "TYPE" "LATEST BACKUP" "AGE" "SIZE" "OFFSITE" "$NC"
-    printf '  %s\n' "$(printf '─%.0s' {1..82})"
+    printf '  %s\n' "$(printf '─%.0s' {1..86})"
 
     local target offsite_files=""
     target="$(server_get BACKUP_REMOTE 2>/dev/null || true)"
@@ -290,12 +290,12 @@ backup_verify() {
                 elif (( age_sec > 3*86400 )); then age_col="${YELLOW}${age_str}${NC}"
                 else                               age_col="${GREEN}${age_str}${NC}"
                 fi
-                printf '  %b%-3s%b  %-32s  %-10s  %-16s  %-6s  %-6s  %s\n' \
-                    "$BOLD" "$idx" "$NC" "$domain" "WordPress" \
+                printf '  %b%-3s%b  %-32s  %-14s  %-16s  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$(_trunc "$domain" 32)" "WordPress" \
                     "$date_str" "$age_col" "$size" "$offsite_col"
             else
-                printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
-                    "$BOLD" "$idx" "$NC" "$domain" "WordPress" \
+                printf '  %b%-3s%b  %-32s  %-14s  %b%-16s%b  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$(_trunc "$domain" 32)" "WordPress" \
                     "$RED" "(no backup)" "$NC" "—" "—" "—"
             fi
         done
@@ -330,12 +330,14 @@ backup_verify() {
                 elif (( age_sec > 3*86400 )); then age_col="${YELLOW}${age_str}${NC}"
                 else                               age_col="${GREEN}${age_str}${NC}"
                 fi
-                printf '  %b%-3s%b  %-32s  %-10s  %-16s  %-6s  %-6s  %s\n' \
-                    "$BOLD" "$idx" "$NC" "${domain:-$name}" "Docker:$name" \
+                printf '  %b%-3s%b  %-32s  %-14s  %-16s  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$(_trunc "${domain:-$name}" 32)" \
+                    "$(_trunc "Docker:$name" 14)" \
                     "$date_str" "$age_col" "$size" "$offsite_col"
             else
-                printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
-                    "$BOLD" "$idx" "$NC" "${domain:-$name}" "Docker:$name" \
+                printf '  %b%-3s%b  %-32s  %-14s  %b%-16s%b  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "$(_trunc "${domain:-$name}" 32)" \
+                    "$(_trunc "Docker:$name" 14)" \
                     "$RED" "(no backup)" "$NC" "—" "—" "—"
             fi
         done

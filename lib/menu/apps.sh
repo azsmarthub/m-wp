@@ -68,8 +68,11 @@ _apps_table() {
             *)       _st_col="$(printf '%b%-9s%b'      "$BOLD"   "$_live" "$NC")" ;;
         esac
 
+        # Truncate long container names (compose stacks like
+        # gpm_login_global_private_server_mysql break the 18-char NAME
+        # column otherwise — pushes domain/status/port out of alignment).
         printf '  %b%-3s%b  %-18s  %-30s  %s  :%-6s %s\n' \
-            "$BOLD" "$_idx" "$NC" "$_name" "$_d" "$_st_col" "$_port" "$_img"
+            "$BOLD" "$_idx" "$NC" "$(_trunc "$_name" 18)" "$_d" "$_st_col" "$_port" "$_img"
     done
     _mhr
 }

@@ -103,6 +103,18 @@ die() {
     exit 1
 }
 
+# Truncate a string to <max> visible chars, appending an ellipsis if cut.
+# Used by table-row formatters across menu + verify so long names don't
+# overflow fixed-width columns and break alignment of subsequent rows.
+_trunc() {
+    local s="$1" max="${2:-30}"
+    if (( ${#s} > max )); then
+        printf '%s…' "${s:0:$((max-1))}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # User helpers
 # ---------------------------------------------------------------------------
