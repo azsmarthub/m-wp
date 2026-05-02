@@ -93,6 +93,22 @@ _mheader() {
 # ──────────────────────────────────────────────────────────────────────
 
 _ssl_icon() {
+    # Fast path for list view — file-exists check only (no openssl spawn).
+    # openssl x509 + date conversion costs ~30ms × 30 sites = 1s of menu lag,
+    # all to detect expired certs the operator will see anyway when visiting
+    # the site. Real expiry is verified in the per-site detail screen
+    # (_menu_do_ssl) where one openssl call is acceptable.
+    local _dom="$1"
+    if [[ -f "/etc/letsencrypt/live/${_dom}/fullchain.pem" \
+       || -f "/etc/mwp/ssl/${_dom}/fullchain.pem" ]]; then
+        printf '✔'
+    else
+        printf '✗'
+    fi
+}
+
+# Slower expiry-aware version — only used in detail screens.
+_ssl_icon_with_expiry() {
     local _dom="$1"
     local _cert=""
     [[ -f "/etc/letsencrypt/live/${_dom}/fullchain.pem" ]] && _cert="/etc/letsencrypt/live/${_dom}/fullchain.pem"
@@ -160,6 +176,34 @@ _short_image() {
     img="${img##*/}"           # keep only last path segment
     [[ -z "$img" ]] && img="?"
     printf 'Docker:%s' "$img"
+}
+
+# Parse an mwp conf file and emit selected fields as a single
+# pipe-delimited line. One awk fork instead of N grep|cut forks per
+# call site — measurable saving when iterating 30+ sites.
+#
+# Args: <conf-path> <field1> [field2 ...]
+# Output: value1|value2|...   (missing fields → empty between pipes)
+_parse_conf_fields() {
+    local conf="$1"; shift
+    local fields="$*"
+    awk -F= -v fl="$fields" '
+        BEGIN {
+            n = split(fl, want, " ")
+            for (i = 1; i <= n; i++) idx[want[i]] = i
+        }
+        $1 in idx {
+            val[idx[$1]] = $2
+        }
+        END {
+            out = ""
+            for (i = 1; i <= n; i++) {
+                if (i > 1) out = out "|"
+                out = out val[i]
+            }
+            print out
+        }
+    ' "$conf"
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -240,12 +284,11 @@ _entities_table() {
     if [[ -d "$MWP_SITES_DIR" ]] && ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
         for _conf in "$MWP_SITES_DIR"/*.conf; do
             [[ -f "$_conf" ]] || continue
-            _d="$(grep   "^DOMAIN="      "$_conf" | cut -d= -f2-)"
-            _st="$(grep  "^STATUS="      "$_conf" | cut -d= -f2-)"
-            _php="$(grep "^PHP_VERSION=" "$_conf" | cut -d= -f2-)"
-            _su="$(grep  "^SITE_USER="   "$_conf" | cut -d= -f2-)"
-            local _wr
-            _wr="$(grep  "^WEB_ROOT="    "$_conf" | cut -d= -f2-)"
+            local _wr _line
+            # Single awk parse instead of 5 grep|cut forks (~5x faster
+            # at 30+ sites). Field order matches the args list below.
+            _line="$(_parse_conf_fields "$_conf" DOMAIN STATUS PHP_VERSION SITE_USER WEB_ROOT)"
+            IFS='|' read -r _d _st _php _su _wr <<<"$_line"
 
             [[ -n "$filter" && "$_d" != *"$filter"* ]] && continue
 
@@ -269,12 +312,10 @@ _entities_table() {
     if [[ -d "$MWP_APPS_DIR" ]] && ls "$MWP_APPS_DIR"/*.conf &>/dev/null 2>&1; then
         for _conf in "$MWP_APPS_DIR"/*.conf; do
             [[ -f "$_conf" ]] || continue
-            local _name _container _live="?"
+            local _name _container _live="?" _line
             _name="$(basename "$_conf" .conf)"
-            _d="$(grep   "^DOMAIN="    "$_conf" | cut -d= -f2-)"
-            _img="$(grep "^IMAGE="     "$_conf" | cut -d= -f2-)"
-            _port="$(grep "^HOST_PORT=" "$_conf" | cut -d= -f2-)"
-            _container="$(grep "^CONTAINER=" "$_conf" | cut -d= -f2-)"
+            _line="$(_parse_conf_fields "$_conf" DOMAIN IMAGE HOST_PORT CONTAINER)"
+            IFS='|' read -r _d _img _port _container <<<"$_line"
 
             [[ -n "$filter" && "$_d" != *"$filter"* && "$_name" != *"$filter"* ]] && continue
 
