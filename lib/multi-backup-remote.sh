@@ -197,12 +197,20 @@ backup_remote_status() {
     printf '  Hostname prefix:  %s\n' "$(hostname -f 2>/dev/null || hostname)"
     [[ -n "$last" ]] && printf '  Last upload:      %s\n' "$last"
 
-    # Disk usage on remote (some providers don't support this — quietly skip)
+    # Disk usage on remote. The host subfolder may not exist yet (first run
+    # before any backup pushed) — `rclone size` returns 3 in that case. We
+    # mask both the stderr noise AND the exit code with `|| true`, otherwise
+    # the assignment trips set -e and the function aborts with no clear
+    # message. Also some providers (raw SFTP) don't support size at all.
     local du_info
-    du_info="$( set +o pipefail; rclone size "${target}/$(hostname -f 2>/dev/null || hostname)" 2>/dev/null )"
+    du_info="$( set +o pipefail
+                rclone size "${target}/$(hostname -f 2>/dev/null || hostname)" 2>/dev/null \
+                  || true )"
     if [[ -n "$du_info" ]]; then
         printf '  Remote usage:\n'
         printf '%s\n' "$du_info" | sed 's/^/    /'
+    else
+        printf '  Remote usage:    (no host subfolder yet — push a backup first)\n'
     fi
     printf '\n'
 }
