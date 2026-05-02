@@ -96,16 +96,32 @@ menu_apps() {
 
     _apps_table
 
+    # Hint about external (unregistered) containers — those visible to docker
+    # but not in /etc/mwp/apps/. They CAN be brought under mwp's backup
+    # umbrella via `mwp app register <name>`.
+    if command -v docker >/dev/null 2>&1; then
+        local _ext_count
+        _ext_count="$( set +o pipefail
+                       docker ps --format '{{.Names}}' 2>/dev/null \
+                         | grep -vxFf <(ls "$MWP_APPS_DIR" 2>/dev/null | sed 's/\.conf$//') \
+                         | wc -l )" || _ext_count=0
+        if [[ "${_ext_count:-0}" -gt 0 ]]; then
+            printf '  %b%s external container(s)%b not registered with mwp — see [r] below\n' \
+                "$YELLOW" "$_ext_count" "$NC"
+        fi
+    fi
+
     if ! command -v docker >/dev/null 2>&1; then
         printf '  %b[i]%b  Install Docker engine\n' "$BOLD" "$NC"
     fi
-    printf '  %b[c]%b  Create new app   %b[d]%b  Docker engine status   %b[0]%b  Back\n' \
-        "$BOLD" "$NC" "$BOLD" "$NC" "$BOLD" "$NC"
+    printf '  %b[c]%b  Create new app   %b[r]%b  Register external container   %b[d]%b  Engine status   %b[0]%b  Back\n' \
+        "$BOLD" "$NC" "$BOLD" "$NC" "$BOLD" "$NC" "$BOLD" "$NC"
     _mprompt "App # or action"
 
     case "$MENU_INPUT" in
-        0|b|back) menu_root; return ;;
+        0|back) menu_root; return ;;
         c|create) _menu_app_create_wizard; menu_apps ;;
+        r|register) _menu_app_register; menu_apps ;;
         d|docker)
             _mc; docker_engine_status; _mpause; menu_apps
             ;;
@@ -180,6 +196,8 @@ menu_app_detail() {
     printf '  %b[4]%b  Logs follow (-f)        %b[9]%b  Pull latest image\n'    "$BOLD" "$NC" "$BOLD" "$NC"
     printf '  %b[5]%b  Open shell in container\n' "$BOLD" "$NC"
     _mhr
+    printf '  %b[B]%b  Backup app NOW          %b[R]%b  Restore from backup\n'  "$BOLD" "$NC" "$BOLD" "$NC"
+    _mhr
     printf '  %b[d]%b  Delete app              %b[0]%b  Back\n' "$BOLD" "$NC" "$BOLD" "$NC"
     _mprompt
 
@@ -232,14 +250,80 @@ menu_app_detail() {
             log_sub "Image pulled. Restart container to apply: select [6] above."
             _mpause; menu_app_detail "$name"
             ;;
+        b|B|backup)
+            require_root
+            source "$MWP_DIR/lib/multi-app-backup.sh"
+            _mc
+            backup_app "$name" "full" || true
+            _mpause; menu_app_detail "$name"
+            ;;
+        r|R|restore)
+            _menu_app_restore "$name"
+            menu_app_detail "$name"
+            ;;
         d|delete)
             require_root
             app_delete "$name" || true
             return
             ;;
-        0|b|back) return ;;
+        0|back) return ;;
         *) menu_app_detail "$name" ;;
     esac
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# App restore picker — list /var/lib/mwp/app-backups/<name>/, let user
+# pick one, run restore_app
+# ──────────────────────────────────────────────────────────────────────
+
+_menu_app_restore() {
+    local name="$1"
+    local bdir="/var/lib/mwp/app-backups/$name"
+
+    _mc
+    printf '\n  %bRestore app: %s%b\n' "$BOLD" "$name" "$NC"
+    _mhr
+
+    local -a files=()
+    local f size mtime date_str idx=0
+    if [[ -d "$bdir" ]]; then
+        for f in "$bdir"/*.tar.gz; do
+            [[ -f "$f" ]] || continue
+            files+=("$f")
+        done
+    fi
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        printf '  %bNo backups found at %s%b\n' "$YELLOW" "$bdir" "$NC"
+        printf '  Run: mwp app backup %s\n' "$name"
+        _mpause; return
+    fi
+
+    # Sort newest first
+    local -a sorted=()
+    while IFS= read -r f; do sorted+=("$f"); done < <(printf '%s\n' "${files[@]}" | xargs -d '\n' ls -t 2>/dev/null)
+
+    for f in "${sorted[@]}"; do
+        idx=$(( idx + 1 ))
+        size="$(du -h "$f" 2>/dev/null | cut -f1)"
+        mtime="$(stat -c %Y "$f")"
+        date_str="$(date -d "@${mtime}" '+%Y-%m-%d %H:%M' 2>/dev/null)"
+        printf '  %b[%s]%b  %-50s  %-16s  %s\n' \
+            "$BOLD" "$idx" "$NC" "$(basename "$f")" "$date_str" "$size"
+    done
+
+    _mhr
+    printf '  %b[0]%b  Cancel\n' "$BOLD" "$NC"
+    _mprompt "Pick #"
+
+    if [[ "$MENU_INPUT" =~ ^[0-9]+$ ]] && \
+       [[ $MENU_INPUT -ge 1 && $MENU_INPUT -le ${#sorted[@]} ]]; then
+        local sel="${sorted[$((MENU_INPUT-1))]}"
+        require_root
+        source "$MWP_DIR/lib/multi-app-backup.sh"
+        restore_app "$name" "$sel" || true
+        _mpause
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -309,4 +393,55 @@ _menu_app_create_wizard() {
 
     app_create "${_args[@]}" || true
     _mpause
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Register external container picker
+# ──────────────────────────────────────────────────────────────────────
+
+_menu_app_register() {
+    require_root
+    if ! command -v docker >/dev/null 2>&1; then
+        log_warn "Docker not installed — nothing to register."
+        _mpause; return
+    fi
+
+    _mc
+    printf '\n  %bRegister external Docker container%b\n' "$BOLD" "$NC"
+    _mhr
+
+    # Build list of containers NOT yet registered with mwp
+    local -a candidates=()
+    local cname
+    while IFS= read -r cname; do
+        [[ -z "$cname" ]] && continue
+        # Skip if already in registry
+        [[ -f "$MWP_APPS_DIR/${cname}.conf" ]] && continue
+        candidates+=("$cname")
+    done < <(docker ps --format '{{.Names}}' 2>/dev/null)
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        printf '  No unregistered containers running.\n'
+        _mpause; return
+    fi
+
+    printf '  %b%-3s  %-32s  %s%b\n' "$BOLD" "#" "CONTAINER" "IMAGE" "$NC"
+    _mhr
+    local idx=0 c img
+    for c in "${candidates[@]}"; do
+        idx=$(( idx + 1 ))
+        img="$(docker inspect "$c" --format '{{.Config.Image}}' 2>/dev/null)"
+        printf '  %b%-3s%b  %-32s  %s\n' "$BOLD" "$idx" "$NC" "$c" "$img"
+    done
+    _mhr
+    printf '  %b[0]%b  Cancel\n' "$BOLD" "$NC"
+    _mprompt "Container #"
+
+    if [[ "$MENU_INPUT" =~ ^[0-9]+$ ]] && \
+       [[ $MENU_INPUT -ge 1 && $MENU_INPUT -le ${#candidates[@]} ]]; then
+        local sel="${candidates[$((MENU_INPUT-1))]}"
+        source "$MWP_DIR/lib/multi-app-backup.sh"
+        app_register "$sel"
+        _mpause
+    fi
 }

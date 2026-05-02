@@ -127,6 +127,9 @@ ${BOLD}Docker apps (Next.js, n8n, Node repos, …):${NC}
   mwp app exec     <name> -- <cmd> Run a command inside the container
   mwp app shell    <name>          Open a shell inside the container
   mwp app delete   <name>          Delete app (container + vhost + data)
+  mwp app register <container>     Register an EXISTING Docker container for backup
+  mwp app backup   <name> [tier]   Backup app data + config (tier: full|daily|weekly|monthly)
+  mwp app restore  <name> <file>   Restore app from a backup archive
 
 ${BOLD}Server:${NC}
   mwp status                       Server + all sites overview
@@ -489,6 +492,22 @@ cmd_app() {
             app_exec "$name" "$@"
             ;;
         shell)   app_shell "${1:-}" ;;
+        register)
+            # Register an existing (external) Docker container so backup +
+            # scheduled runs can include it.
+            source "$MWP_DIR/lib/multi-app-backup.sh"
+            app_register "${1:-}"
+            ;;
+        backup)
+            # mwp app backup <name> [tier]
+            source "$MWP_DIR/lib/multi-app-backup.sh"
+            backup_app "${1:-}" "${2:-full}"
+            ;;
+        restore)
+            # mwp app restore <name> <archive>
+            source "$MWP_DIR/lib/multi-app-backup.sh"
+            restore_app "${1:-}" "${2:-}"
+            ;;
         *) cmd_help; die "Unknown app subcommand: $sub" ;;
     esac
 }

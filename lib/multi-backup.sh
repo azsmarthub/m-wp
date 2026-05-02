@@ -239,7 +239,8 @@ backup_verify() {
     local now_epoch
     now_epoch="$(date +%s)"
 
-    # 1) WordPress sites
+    # 1) WordPress sites — check ALL tier files (full + daily + weekly + monthly)
+    # not just *-full-*. Scheduled runs use tier-named files now.
     if [[ -d "$MWP_SITES_DIR" ]] && ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
         for conf in "$MWP_SITES_DIR"/*.conf; do
             [[ -f "$conf" ]] || continue
@@ -247,12 +248,7 @@ backup_verify() {
             domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
             user="$(grep '^SITE_USER=' "$conf" | cut -d= -f2-)"
             bdir="/home/${user}/backups"
-            latest=""
-            if compgen -G "${bdir}/${domain}-full-"*".tar.gz" >/dev/null 2>&1; then
-                latest="$( set +o pipefail
-                            ls -t "${bdir}/${domain}-full-"*".tar.gz" 2>/dev/null | head -1
-                          )" || true
-            fi
+            latest="$(_backup_latest_for "$bdir" "$domain")"
             if [[ -n "$latest" && -f "$latest" ]]; then
                 mtime="$(stat -c %Y "$latest")"
                 age_sec=$(( now_epoch - mtime ))
@@ -285,7 +281,7 @@ backup_verify() {
         done
     fi
 
-    # 2) Docker apps — Phase C will add backup; for now flag as not-yet
+    # 2) Docker apps — registered via `mwp app create` or `mwp app register`
     if [[ -d "$MWP_APPS_DIR" ]] && ls "$MWP_APPS_DIR"/*.conf &>/dev/null 2>&1; then
         for conf in "$MWP_APPS_DIR"/*.conf; do
             [[ -f "$conf" ]] || continue
@@ -293,9 +289,35 @@ backup_verify() {
             domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
             local name
             name="$(basename "$conf" .conf)"
-            printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
-                "$BOLD" "$idx" "$NC" "$domain" "Docker:$name" \
-                "$YELLOW" "(Phase C todo)" "$NC" "—" "—" "⚠"
+            local app_bdir="/var/lib/mwp/app-backups/$name"
+            latest="$(_backup_latest_for "$app_bdir" "$name")"
+            if [[ -n "$latest" && -f "$latest" ]]; then
+                mtime="$(stat -c %Y "$latest")"
+                age_sec=$(( now_epoch - mtime ))
+                age_str="$(_backup_human_age "$age_sec")"
+                size="$(du -h "$latest" 2>/dev/null | cut -f1)"
+                fname="$(basename "$latest")"
+                date_str="$(date -d @"$mtime" '+%Y-%m-%d %H:%M')"
+                offsite_col="—"
+                if [[ -n "$target" ]]; then
+                    case "$offsite_files" in
+                        *"|$fname|"*) offsite_col="${GREEN}✔${NC} gdrive" ;;
+                        *)            offsite_col="${RED}✗${NC}" ;;
+                    esac
+                fi
+                local age_col
+                if   (( age_sec > 7*86400 )); then age_col="${RED}${age_str}${NC}"
+                elif (( age_sec > 3*86400 )); then age_col="${YELLOW}${age_str}${NC}"
+                else                               age_col="${GREEN}${age_str}${NC}"
+                fi
+                printf '  %b%-3s%b  %-32s  %-10s  %-16s  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "${domain:-$name}" "Docker:$name" \
+                    "$date_str" "$age_col" "$size" "$offsite_col"
+            else
+                printf '  %b%-3s%b  %-32s  %-10s  %b%-16s%b  %-6s  %-6s  %s\n' \
+                    "$BOLD" "$idx" "$NC" "${domain:-$name}" "Docker:$name" \
+                    "$RED" "(no backup)" "$NC" "—" "—" "—"
+            fi
         done
     fi
 
@@ -307,6 +329,19 @@ backup_verify() {
             "$YELLOW" "$NC"
     fi
     printf '\n'
+}
+
+# Find the newest backup file for a domain/app under <dir>, across ALL tier
+# names (full / daily / weekly / monthly). Echoes path or empty if none.
+# Wrapped in subshell-with-pipefail-off because `ls` no-match is normal
+# when an entity has never been backed up — we treat as "empty result".
+_backup_latest_for() {
+    local dir="$1" name="$2"
+    [[ -d "$dir" ]] || { return 0; }
+    ( set +o pipefail
+      ls -t "${dir}/${name}-"{full,daily,weekly,monthly}-*".tar.gz" \
+            "${dir}/${name}-"{full,daily,weekly,monthly}-*".sql.gz" \
+        2>/dev/null | head -1 )
 }
 
 # Convert seconds-since-epoch-delta into a human label like 5m / 3h / 2d / 14d.
@@ -352,27 +387,47 @@ backup_all_scheduled() {
     printf '  Schedule: %s\n' "$(server_get BACKUP_SCHEDULE 2>/dev/null || echo '?')"
     printf '══════════════════════════════════════════════════════════════════\n\n'
 
-    local conf domain ok=0 fail=0 start_ts end_ts
+    local conf domain ok=0 fail=0 start_ts end_ts app_ok=0 app_fail=0
     start_ts="$(date +%s)"
 
-    if [[ ! -d "$MWP_SITES_DIR" ]] || ! ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
-        printf '  No sites registered — nothing to back up.\n'
-        return 0
+    # ─── 1) WordPress sites ─────────────────────────────────────────
+    if [[ -d "$MWP_SITES_DIR" ]] && ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
+        printf '  Phase 1/2: WordPress sites\n'
+        for conf in "$MWP_SITES_DIR"/*.conf; do
+            [[ -f "$conf" ]] || continue
+            domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
+            [[ -z "$domain" ]] && continue
+            printf '\n──── site: %s ────\n' "$domain"
+            if backup_site "$domain" "full" "$tier"; then
+                ok=$(( ok + 1 ))
+            else
+                fail=$(( fail + 1 ))
+                printf '  ⚠ FAILED: %s — see log above\n' "$domain"
+            fi
+        done
+    else
+        printf '  No sites registered — skipping site phase.\n'
     fi
 
-    for conf in "$MWP_SITES_DIR"/*.conf; do
-        [[ -f "$conf" ]] || continue
-        domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
-        [[ -z "$domain" ]] && continue
-        printf '\n──── %s ────\n' "$domain"
-        # Don't let one site abort the loop — capture status, log, continue.
-        if backup_site "$domain" "full" "$tier"; then
-            ok=$(( ok + 1 ))
-        else
-            fail=$(( fail + 1 ))
-            printf '  ⚠ FAILED: %s — see log above\n' "$domain"
-        fi
-    done
+    # ─── 2) Docker apps ─────────────────────────────────────────────
+    if [[ -d "$MWP_APPS_DIR" ]] && ls "$MWP_APPS_DIR"/*.conf &>/dev/null 2>&1; then
+        printf '\n  Phase 2/2: Docker apps\n'
+        # Lazy-source app-backup lib (only needed when there are apps)
+        [[ -n "${_MWP_APP_BACKUP_LOADED:-}" ]] || \
+            source "$MWP_DIR/lib/multi-app-backup.sh"
+        for conf in "$MWP_APPS_DIR"/*.conf; do
+            [[ -f "$conf" ]] || continue
+            local app_name
+            app_name="$(basename "$conf" .conf)"
+            printf '\n──── app: %s ────\n' "$app_name"
+            if backup_app "$app_name" "$tier"; then
+                app_ok=$(( app_ok + 1 ))
+            else
+                app_fail=$(( app_fail + 1 ))
+                printf '  ⚠ FAILED: %s — see log above\n' "$app_name"
+            fi
+        done
+    fi
 
     end_ts="$(date +%s)"
     local elapsed=$(( end_ts - start_ts ))
@@ -380,8 +435,13 @@ backup_all_scheduled() {
     printf '\n══════════════════════════════════════════════════════════════════\n'
     printf '  Run finished: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
     printf '  Elapsed:      %dm %ds\n' $(( elapsed / 60 )) $(( elapsed % 60 ))
-    printf '  Result:       %d ok, %d failed\n' "$ok" "$fail"
+    printf '  Sites:        %d ok, %d failed\n' "$ok" "$fail"
+    printf '  Apps:         %d ok, %d failed\n' "$app_ok" "$app_fail"
     printf '══════════════════════════════════════════════════════════════════\n'
+
+    # Combined fail count for return status + last-result tracking
+    fail=$(( fail + app_fail ))
+    ok=$(( ok + app_ok ))
 
     server_set "BACKUP_LAST_RUN"   "$(date '+%Y-%m-%d %H:%M:%S')"
     server_set "BACKUP_LAST_TIER"  "$tier"
