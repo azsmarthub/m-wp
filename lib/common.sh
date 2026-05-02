@@ -259,9 +259,13 @@ redis_alloc_db() {
         [[ -n "$idx" ]] && used+=("$idx")
     done
 
-    # Find first available index 0–15
+    # Find first available index 0–127.
+    # Default Redis allows 16 logical DBs; we raise the search range to 128
+    # because real-world deployments hit 16+ sites quickly. To actually use
+    # >16 DBs you must also set `databases 128` in /etc/redis/redis.conf
+    # and restart redis-server. See setup-multi.sh / docs.
     local i
-    for i in $(seq 0 15); do
+    for i in $(seq 0 127); do
         local taken=0
         local u
         for u in "${used[@]:-}"; do
@@ -270,7 +274,7 @@ redis_alloc_db() {
         [[ $taken -eq 0 ]] && printf '%d' "$i" && return 0
     done
 
-    die "No available Redis DB index (max 16 sites using shared Redis). Consider dedicated Redis per site."
+    die "No available Redis DB index (max 128 sites using shared Redis). Consider dedicated Redis per site."
 }
 
 # ---------------------------------------------------------------------------
