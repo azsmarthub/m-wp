@@ -169,9 +169,16 @@ RESTORE_HELP
     fi
 
     # ── Step 6: archive everything ───
+    # tar of the stage dir (already a snapshot) shouldn't ever hit
+    # files-changed-during-read, but tolerate exit 1 anyway for parity
+    # with backup_site (defensive — no harm if it never fires).
     log_sub "Compressing archive..."
-    if ! tar czf "$archive" -C "$stage" . 2>/dev/null; then
-        die "tar failed: $archive"
+    local _tar_rc=0
+    tar czf "$archive" -C "$stage" . 2>/dev/null || _tar_rc=$?
+    if (( _tar_rc >= 2 )); then
+        die "tar failed (exit $_tar_rc): $archive"
+    elif (( _tar_rc == 1 )); then
+        log_warn "tar exit 1 — some files changed during read (archive is valid)"
     fi
     chmod 600 "$archive"
 

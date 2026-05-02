@@ -57,12 +57,26 @@ backup_site() {
                 -u "$db_user" -p"$db_pass" "$db_name" > "$db_dump" 2>/dev/null || \
                 die "mysqldump failed for $db_name"
 
-            # 2. Archive files + db dump
+            # 2. Archive files + db dump.
+            # tar exit codes:
+            #   0  success
+            #   1  some files changed/disappeared during read (e.g. cache
+            #      files updated mid-tar) — archive is valid, just warn
+            #   2+ fatal error — archive is suspect
+            # The previous `|| die` treated warnings as fatal, which broke
+            # bs-doctor.com (busy WordPress with active page cache writes).
             log_sub "Archiving files..."
+            local _rc=0
             tar czf "$archive" \
                 -C "$(dirname "$web_root")" "$(basename "$web_root")" \
                 -C /tmp "$(basename "$db_dump")" \
-                2>/dev/null || die "tar archive failed"
+                2>/dev/null || _rc=$?
+            if (( _rc >= 2 )); then
+                rm -f "$db_dump"
+                die "tar archive failed (exit $_rc)"
+            elif (( _rc == 1 )); then
+                log_warn "tar exit 1 — some files changed during read (archive is valid)"
+            fi
 
             rm -f "$db_dump"
             ;;
@@ -78,9 +92,15 @@ backup_site() {
         files)
             archive="${backup_dir}/${domain}-${arch_slug}-${timestamp}.tar.gz"
             log_sub "Archiving files (no DB)..."
+            local _rc=0
             tar czf "$archive" \
                 -C "$(dirname "$web_root")" "$(basename "$web_root")" \
-                2>/dev/null || die "tar archive failed"
+                2>/dev/null || _rc=$?
+            if (( _rc >= 2 )); then
+                die "tar archive failed (exit $_rc)"
+            elif (( _rc == 1 )); then
+                log_warn "tar exit 1 — files changed during read (archive is valid)"
+            fi
             ;;
     esac
 
@@ -391,6 +411,12 @@ backup_all_scheduled() {
     start_ts="$(date +%s)"
 
     # ─── 1) WordPress sites ─────────────────────────────────────────
+    # CRITICAL: backup_site / backup_app call `die` on internal failure,
+    # and `die` does `exit 1` which kills the whole script — not just
+    # the function. Plain `if backup_site ...; then` does NOT catch
+    # that because `exit` propagates past `if`. Wrap the call in a
+    # SUBSHELL so the exit only kills the subshell; the parent loop
+    # picks up the non-zero status and moves to the next site/app.
     if [[ -d "$MWP_SITES_DIR" ]] && ls "$MWP_SITES_DIR"/*.conf &>/dev/null 2>&1; then
         printf '  Phase 1/2: WordPress sites\n'
         for conf in "$MWP_SITES_DIR"/*.conf; do
@@ -398,7 +424,7 @@ backup_all_scheduled() {
             domain="$(grep '^DOMAIN=' "$conf" | cut -d= -f2-)"
             [[ -z "$domain" ]] && continue
             printf '\n──── site: %s ────\n' "$domain"
-            if backup_site "$domain" "full" "$tier"; then
+            if ( backup_site "$domain" "full" "$tier" ); then
                 ok=$(( ok + 1 ))
             else
                 fail=$(( fail + 1 ))
@@ -412,7 +438,6 @@ backup_all_scheduled() {
     # ─── 2) Docker apps ─────────────────────────────────────────────
     if [[ -d "$MWP_APPS_DIR" ]] && ls "$MWP_APPS_DIR"/*.conf &>/dev/null 2>&1; then
         printf '\n  Phase 2/2: Docker apps\n'
-        # Lazy-source app-backup lib (only needed when there are apps)
         [[ -n "${_MWP_APP_BACKUP_LOADED:-}" ]] || \
             source "$MWP_DIR/lib/multi-app-backup.sh"
         for conf in "$MWP_APPS_DIR"/*.conf; do
@@ -420,7 +445,7 @@ backup_all_scheduled() {
             local app_name
             app_name="$(basename "$conf" .conf)"
             printf '\n──── app: %s ────\n' "$app_name"
-            if backup_app "$app_name" "$tier"; then
+            if ( backup_app "$app_name" "$tier" ); then
                 app_ok=$(( app_ok + 1 ))
             else
                 app_fail=$(( app_fail + 1 ))
