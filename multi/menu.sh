@@ -424,13 +424,33 @@ main() {
             _load_site_libs; _load_menu_lib; menu_sites "${1:-}"
             ;;
         site)    cmd_site "$@" ;;
+        apps)
+            # `mwp apps` (no subcommand) → interactive Apps menu.
+            # Subcommands (create/list/info/...) still go through cmd_app.
+            if [[ $# -eq 0 ]]; then
+                _load_site_libs; _load_app_libs; _load_menu_lib; menu_apps
+            else
+                cmd_app "$@"
+            fi
+            ;;
+        security|sec)
+            _load_site_libs; _load_menu_lib; menu_security
+            ;;
         php)     cmd_php "$@" ;;
         cache)   cmd_cache "$@" ;;
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
         docker)  cmd_docker "$@" ;;
-        app|apps) cmd_app   "$@" ;;
+        app)
+            # `mwp app` (no subcommand) → interactive Apps menu.
+            # Subcommands (create/list/info/...) → cmd_app.
+            if [[ $# -eq 0 ]]; then
+                _load_site_libs; _load_app_libs; _load_menu_lib; menu_apps
+            else
+                cmd_app "$@"
+            fi
+            ;;
         ssh)
             local sub="${1:-status}"
             shift || true
