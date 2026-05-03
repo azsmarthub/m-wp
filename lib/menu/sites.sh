@@ -115,7 +115,7 @@ menu_site_detail() {
     printf '  %b[2]%b  %-8s site          %b[7]%b  Check isolation\n'           "$BOLD" "$NC" "$_toggle" "$BOLD" "$NC"
     printf '  %b[3]%b  Switch PHP version      %b[8]%b  Enter site shell\n'     "$BOLD" "$NC" "$BOLD" "$NC"
     printf '  %b[4]%b  Purge cache             %b[9]%b  SSL manage\n'           "$BOLD" "$NC" "$BOLD" "$NC"
-    printf '  %b[5]%b  Backup\n'                                                "$BOLD" "$NC"
+    printf '  %b[5]%b  Backup                  %b[L]%b  Magic-login URL (24h)\n' "$BOLD" "$NC" "$BOLD" "$NC"
     _mhr
     printf '  %b[d]%b  Delete site             %b[0]%b  Back\n' "$BOLD" "$NC" "$BOLD" "$NC"
     _mprompt
@@ -148,6 +148,10 @@ menu_site_detail() {
             menu_site_detail "$domain"
             ;;
         9) _menu_do_ssl "$domain"; menu_site_detail "$domain" ;;
+        l|L|login)
+            _mc; require_root; site_magic_login "$domain"; _mpause
+            menu_site_detail "$domain"
+            ;;
         d|delete)
             require_root
             site_delete "$domain" || true

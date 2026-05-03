@@ -62,6 +62,7 @@ ${BOLD}Site management:${NC}
   mwp site disable <domain>        Disable site (keeps files)
   mwp site shell   <domain>        Enter site user shell
   mwp site check-isolation <domain> Audit isolation layers
+  mwp site login   <domain> [uid]  Magic-link auto-login (24h, single-use, default uid=1)
 
 ${BOLD}PHP:${NC}
   mwp php list                     List installed PHP versions
@@ -228,7 +229,7 @@ cmd_site() {
 
     # Known direct subcommands — handle non-interactively
     case "$sub" in
-        create|delete|info|enable|disable|shell|check-isolation) ;;
+        create|delete|info|enable|disable|shell|check-isolation|login) ;;
         *)
             # No subcommand or unrecognised → interactive menu
             # Treat $sub as a filter string (e.g. "mwp site do1" filters by "do1")
@@ -259,6 +260,10 @@ cmd_site() {
             user="$(site_get "$domain" SITE_USER)"
             # Site user shell is /usr/sbin/nologin (security), override with bash
             exec su -s /bin/bash - "$user"
+            ;;
+        login)
+            # Magic-link auto-login (mu-plugin pattern). 24h TTL, single-use.
+            site_magic_login "${1:-}" "${2:-1}"
             ;;
     esac
 }
