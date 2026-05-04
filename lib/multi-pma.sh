@@ -375,6 +375,94 @@ PHP
 }
 
 # ---------------------------------------------------------------------------
+# pma_create_admin_link [ttl_hours]
+# Generates a magic link that auto-logs in as MariaDB root — phpMyAdmin
+# sees ALL databases on the server. Default TTL 6h (shorter than per-site
+# 24h since the blast radius is bigger).
+#
+# Same single-use cookie binding as per-site links. Marker `is_admin=true`
+# in the link file lets `pma list` render it red + labeled "ALL DBs".
+# ---------------------------------------------------------------------------
+PMA_ADMIN_DEFAULT_TTL_HOURS=6
+
+pma_create_admin_link() {
+    require_root
+    local ttl_hours="${1:-$PMA_ADMIN_DEFAULT_TTL_HOURS}"
+    [[ "$ttl_hours" =~ ^[0-9]+$ ]] || die "TTL must be a positive integer (got: $ttl_hours)"
+    (( ttl_hours > 0 && ttl_hours <= 168 )) || die "TTL must be 1..168 hours (got: $ttl_hours)"
+
+    _pma_require_installed
+    local panel_domain
+    panel_domain="$(_pma_require_panel)"
+
+    local root_pass
+    root_pass="$(server_get "DB_ROOT_PASS")"
+    [[ -z "$root_pass" ]] && die "DB_ROOT_PASS not set in $MWP_SERVER_CONF — cannot create admin link."
+
+    local rand pma_path expires_ts created_ts created_ip
+    rand="$(_pma_rand_path)"
+    pma_path="/db-${rand}/"
+    created_ts="$(date +%s)"
+    expires_ts=$(( created_ts + ttl_hours * 3600 ))
+    created_ip="${SSH_CLIENT%% *}"
+    [[ -z "$created_ip" ]] && created_ip="local"
+
+    # Slug "_admin" — file naming convention so list/revoke can spot it
+    local link_file="$PMA_LINKS_DIR/_admin-${rand}.php"
+
+    local esc_pass
+    esc_pass="$(printf '%s' "$root_pass" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")"
+
+    # db_name='' so phpMyAdmin shows ALL databases (no only_db filter).
+    # is_admin=true so list / revoke / etc. recognize this entry.
+    cat > "$link_file" <<PHP
+<?php return array (
+  'path' => '${pma_path}',
+  'slug' => '_admin',
+  'domain' => 'ALL DATABASES (root)',
+  'db_name' => '',
+  'user' => 'root',
+  'pass' => '${esc_pass}',
+  'created' => ${created_ts},
+  'expires' => ${expires_ts},
+  'created_ip' => '${created_ip}',
+  'is_admin' => true,
+  'claimed_token' => '',
+  'claimed_at' => 0,
+  'claimed_ip' => '',
+);
+PHP
+    chown "$PMA_USER:$PMA_USER" "$link_file"
+    chmod 600 "$link_file"
+
+    pma_render_nginx_snippet
+    _pma_nginx_reload || {
+        rm -f "$link_file"
+        pma_render_nginx_snippet
+        _pma_nginx_reload || true
+        die "nginx reload failed — admin link rolled back"
+    }
+
+    local scheme="http"
+    [[ -f "/etc/letsencrypt/live/${panel_domain}/fullchain.pem" ]] && scheme="https"
+    [[ "$scheme" == "http" ]] \
+        && log_warn "Panel has no SSL — root credentials will travel in plaintext. Run: mwp panel ssl"
+
+    local url="${scheme}://${panel_domain}${pma_path}"
+    local human_expiry
+    human_expiry="$(date -d "@$expires_ts" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || printf '%s' "$expires_ts")"
+
+    printf '\n%b  ⚠  ADMIN phpMyAdmin link — ROOT access to ALL databases%b\n' "$RED" "$NC"
+    printf '  %s\n' "──────────────────────────────────────────────────────────"
+    printf '  %s\n\n' "$url"
+    printf '  Login as:   root  (sees every site DB)\n'
+    printf '  Expires:    %s  (%sh)\n' "$human_expiry" "$ttl_hours"
+    printf '  %bSingle-use.%b First browser to open it locks the link;\n' "$DIM" "$NC"
+    printf '  %b           %b further browsers get HTTP 403.\n' "$DIM" "$NC"
+    printf '  %bRevoke now: mwp db pma revoke-all%b\n\n' "$YELLOW" "$NC"
+}
+
+# ---------------------------------------------------------------------------
 # pma_render_nginx_snippet — regenerate /etc/nginx/snippets/mwp-pma.conf
 # from current link files. Idempotent. No nginx reload (caller decides).
 # ---------------------------------------------------------------------------
@@ -423,12 +511,14 @@ pma_list() {
     local f
     for f in "${files[@]}"; do
         [[ -z "$f" || ! -f "$f" ]] && continue
-        local domain pma_path expires_ts claimed_token claimed_ip
+        local domain pma_path expires_ts claimed_token claimed_ip is_admin
         domain="$(_pma_link_field "$f" domain)"
         pma_path="$(_pma_link_field "$f" path)"
         expires_ts="$(_pma_link_int_field "$f" expires)"
         claimed_token="$(_pma_link_field "$f" claimed_token)"
         claimed_ip="$(_pma_link_field "$f" claimed_ip)"
+        is_admin=0
+        [[ "$(basename "$f")" == _admin-* ]] && is_admin=1
 
         local now status
         now="$(date +%s)"
@@ -447,8 +537,16 @@ pma_list() {
         [[ "$status" == "expired" ]] && color="$DIM"
         [[ "$status" == "claimed" ]] && color="$YELLOW"
 
-        printf '  %-28s %b%-10s%b %-19s %s\n' \
-            "$(_trunc "$domain" 28)" "$color" "$status" "$NC" "$exp_human" "$pma_path"
+        local label_color=""
+        local label="$domain"
+        if [[ $is_admin -eq 1 ]]; then
+            label="ADMIN — all DBs (root)"
+            label_color="$RED"
+        fi
+
+        printf '  %b%-28s%b %b%-10s%b %-19s %s\n' \
+            "$label_color" "$(_trunc "$label" 28)" "$NC" \
+            "$color" "$status" "$NC" "$exp_human" "$pma_path"
         [[ "$status" == "claimed" && -n "$claimed_ip" ]] \
             && printf '  %s%s%s\n' "$DIM" "    locked to: $claimed_ip" "$NC"
         count=$((count + 1))

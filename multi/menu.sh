@@ -71,10 +71,11 @@ ${BOLD}PHP:${NC}
 
 ${BOLD}Database:${NC}
   mwp db pma install               Install phpMyAdmin (one-time, panel hostname)
-  mwp db pma <domain> [ttl]        Generate single-use 24h magic-link
+  mwp db pma <domain> [ttl]        Generate single-use 24h magic-link (per-site)
+  mwp db pma admin [ttl]           Generate ADMIN link — root sees ALL DBs (default 6h)
   mwp db pma list                  Show active links + status
   mwp db pma revoke <domain>       Revoke all active links for one site
-  mwp db pma revoke-all            Revoke every active link
+  mwp db pma revoke-all            Revoke every active link (incl. admin)
   mwp db pma status                Show install state + link count
   mwp db pma uninstall             Remove phpMyAdmin completely
 
@@ -318,7 +319,8 @@ cmd_db() {
         revoke)      pma_revoke "${1:-}" ;;
         revoke-all)  pma_revoke_all ;;
         sweep)       pma_sweep_expired ;;
-        "")          die "Usage: mwp db pma <install|status|list|revoke|<domain>>" ;;
+        admin)       pma_create_admin_link "${1:-}" ;;
+        "")          die "Usage: mwp db pma <install|status|list|admin|revoke|<domain>>" ;;
         # Default: treat as domain name → generate link
         *)           pma_create_link "$action" "${1:-}" ;;
     esac
