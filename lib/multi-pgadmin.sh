@@ -112,22 +112,18 @@ pgadmin_reload_servers() {
         return 0
     fi
 
-    # pgAdmin 8.x+: `setup.py load-servers <subcommand>`
-    # On older images the flag was --load-servers — we try both.
-    local out
-    if out="$(docker exec "mwp-${PGADMIN_APP_NAME}" \
-        python3 /pgadmin4/setup.py load-servers \
+    # IMPORTANT: must use /venv/bin/python3 — the official image's setup.py
+    # imports `typer` which is only in the venv, not in the system python.
+    # Argument order matches dpage/pgadmin4's own entrypoint.sh:
+    #   setup.py load-servers <json_path> --user <email> [--replace]
+    if docker exec "mwp-${PGADMIN_APP_NAME}" \
+        /venv/bin/python3 /pgadmin4/setup.py load-servers \
+        /var/lib/pgadmin/servers.json \
         --user "$EMAIL" \
-        --replace /var/lib/pgadmin/servers.json 2>&1)"; then
-        log_sub "pgAdmin server list refreshed (${out##*[[:space:]]} entries)"
+        --replace >/dev/null 2>&1; then
+        log_sub "pgAdmin server list refreshed."
     else
-        # Old syntax fallback
-        docker exec "mwp-${PGADMIN_APP_NAME}" \
-            python3 /pgadmin4/setup.py \
-            --load-servers /var/lib/pgadmin/servers.json \
-            --user "$EMAIL" --replace >/dev/null 2>&1 \
-            && log_sub "pgAdmin server list refreshed (legacy syntax)" \
-            || log_warn "pgAdmin server import failed — re-run: mwp pgadmin reload-servers"
+        log_warn "pgAdmin server import failed — re-run: mwp pgadmin reload-servers"
     fi
 }
 
