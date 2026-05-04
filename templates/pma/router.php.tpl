@@ -84,7 +84,9 @@ foreach (glob("$mwp_links_dir/*.php") as $link_file) {
         }
     }
 
-    // Apply autologin for this site — pma reads $cfg after this file returns
+    // Apply autologin for this site — pma reads $cfg after this file returns.
+    // AllowRoot is gated by the link's allow_root flag: per-site links keep it
+    // false (defense in depth), admin links flip it true so root can sign in.
     $cfg['Servers'][1]['auth_type']        = 'config';
     $cfg['Servers'][1]['user']             = $link['user'];
     $cfg['Servers'][1]['password']         = $link['pass'];
@@ -92,7 +94,7 @@ foreach (glob("$mwp_links_dir/*.php") as $link_file) {
     $cfg['Servers'][1]['only_db']          = $link['db_name'] ?? '';
     $cfg['Servers'][1]['verbose']          = $link['domain'] ?? '';
     $cfg['Servers'][1]['AllowNoPassword']  = false;
-    $cfg['Servers'][1]['AllowRoot']        = false;
+    $cfg['Servers'][1]['AllowRoot']        = !empty($link['allow_root']);
 
     return;
 }

@@ -141,8 +141,21 @@ pma_install() {
     require_root
     _pma_require_panel >/dev/null
 
+    # Refresh router + FPM pool on every call so `mwp db pma install` after a
+    # `mwp update` picks up template changes. Skips the heavy steps (apt,
+    # useradd, panel-vhost patch, cron) when already installed.
     if _pma_is_installed; then
-        log_info "phpMyAdmin already installed. Run 'mwp db pma status' for details."
+        log_info "phpMyAdmin already installed — refreshing router + FPM pool from current templates."
+        local _ppool _pfpm
+        _ppool="$(_pma_pool_conf)"
+        _pfpm="$(_pma_fpm_service)"
+        GENERATED_AT="$(date '+%Y-%m-%d %H:%M:%S')" \
+            render_template "$MWP_DIR/templates/php/multi-pma-pool.conf.tpl" > "$_ppool"
+        chmod 644 "$_ppool"
+        cp "$MWP_DIR/templates/pma/router.php.tpl" "$PMA_ROUTER_CONF"
+        chmod 644 "$PMA_ROUTER_CONF"
+        service_restart "$_pfpm"
+        log_success "Router + FPM pool refreshed."
         return 0
     fi
 
@@ -419,7 +432,7 @@ pma_create_admin_link() {
 <?php return array (
   'path' => '${pma_path}',
   'slug' => '_admin',
-  'domain' => 'ALL DATABASES (root)',
+  'domain' => 'admin',
   'db_name' => '',
   'user' => 'root',
   'pass' => '${esc_pass}',
@@ -427,6 +440,7 @@ pma_create_admin_link() {
   'expires' => ${expires_ts},
   'created_ip' => '${created_ip}',
   'is_admin' => true,
+  'allow_root' => true,
   'claimed_token' => '',
   'claimed_at' => 0,
   'claimed_ip' => '',
