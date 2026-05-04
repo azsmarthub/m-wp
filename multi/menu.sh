@@ -89,12 +89,17 @@ ${BOLD}PostgreSQL (opt-in — for Docker apps & external services):${NC}
   mwp pg db list                   List mwp-managed DBs
   mwp pg db info <name>            Show DB credentials
   mwp pg psql                      psql shell as postgres superuser
+  mwp pg expose <ip>[/cidr]        Allow remote VPS to connect (UFW + pg_hba)
+  mwp pg unexpose <ip>             Revoke remote access
+  mwp pg exposed                   Show always-allowed + explicitly-exposed IPs
 
 ${BOLD}pgAdmin (opt-in — web UI for PostgreSQL via pgadmin.<panel-apex>):${NC}
   mwp pgadmin install [domain]     Deploy pgAdmin Docker container + SSL
+                                   Auto-imports all `mwp pg db` entries
   mwp pgadmin uninstall            Remove container + nginx + DATA
   mwp pgadmin status               Show URL + login email + container state
   mwp pgadmin url                  Print URL only
+  mwp pgadmin reload-servers       Re-import server list from /etc/mwp/pg-dbs/
 
 ${BOLD}Cache:${NC}
   mwp cache purge  <domain>        Purge FastCGI + Redis cache for site
@@ -358,6 +363,9 @@ cmd_pg() {
         status|info) postgres_status ;;
         tune)        postgres_tune ;;
         psql|shell)  postgres_psql ;;
+        expose)      postgres_allow_ip "${1:-}" ;;
+        unexpose)    postgres_revoke_ip "${1:-}" ;;
+        exposed|allow-list) postgres_list_exposed ;;
         db)
             local action="${1:-list}"
             shift || true
@@ -381,10 +389,11 @@ cmd_pgadmin() {
     shift || true
     source "$MWP_DIR/lib/multi-pgadmin.sh"
     case "$sub" in
-        install)     pgadmin_install "${1:-}" ;;
-        uninstall)   pgadmin_uninstall ;;
-        status|info) pgadmin_status ;;
-        url)         pgadmin_url ;;
+        install)        pgadmin_install "${1:-}" ;;
+        uninstall)      pgadmin_uninstall ;;
+        status|info)    pgadmin_status ;;
+        url)            pgadmin_url ;;
+        reload-servers) pgadmin_reload_servers ;;
         *) cmd_help; die "Unknown pgadmin subcommand: $sub" ;;
     esac
 }

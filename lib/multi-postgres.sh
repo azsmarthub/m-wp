@@ -171,6 +171,7 @@ postgres_apply_firewall() {
 # ---------------------------------------------------------------------------
 # postgres_apply_pg_hba — manage MWP block in pg_hba.conf
 # Allows: peer for postgres, scram-sha-256 from localhost + Docker bridges.
+# Plus any explicitly-exposed remote IPs from POSTGRES_ALLOWED_IPS.
 # ---------------------------------------------------------------------------
 postgres_apply_pg_hba() {
     require_root
@@ -182,16 +183,136 @@ postgres_apply_pg_hba() {
     # Strip any existing MWP block
     sed -i "/^${PG_HBA_BEGIN}\$/,/^${PG_HBA_END}\$/d" "$hba"
 
-    cat >> "$hba" <<HBA
-${PG_HBA_BEGIN}
-# Docker bridge networks — required for mwp app containers to reach postgres
-host    all             all             172.16.0.0/12           scram-sha-256
-host    all             all             127.0.0.1/32            scram-sha-256
-host    all             all             ::1/128                 scram-sha-256
-${PG_HBA_END}
-HBA
+    {
+        printf '%s\n' "$PG_HBA_BEGIN"
+        printf '# Docker bridge networks — required for mwp app containers to reach postgres\n'
+        printf 'host    all             all             172.16.0.0/12           scram-sha-256\n'
+        printf 'host    all             all             127.0.0.1/32            scram-sha-256\n'
+        printf 'host    all             all             ::1/128                 scram-sha-256\n'
+
+        # Add explicitly-exposed remote IPs (from `mwp pg expose <ip>`)
+        local exposed
+        exposed="$(server_get POSTGRES_ALLOWED_IPS)"
+        if [[ -n "$exposed" ]]; then
+            printf '# Remote IPs explicitly exposed via `mwp pg expose`\n'
+            local IFS=','
+            local ip
+            for ip in $exposed; do
+                [[ -z "$ip" ]] && continue
+                printf 'host    all             all             %-23s scram-sha-256\n' "$ip"
+            done
+        fi
+
+        printf '%s\n' "$PG_HBA_END"
+    } >> "$hba"
+
     systemctl reload postgresql 2>/dev/null || systemctl restart postgresql
     log_sub "pg_hba.conf updated (Docker bridge + localhost allowed via scram-sha-256)"
+}
+
+# ---------------------------------------------------------------------------
+# postgres_allow_ip <ip>[/cidr] — open postgres to a specific remote address
+# ---------------------------------------------------------------------------
+postgres_allow_ip() {
+    require_root
+    local ip="${1:-}"
+    [[ -z "$ip" ]] && die "Usage: mwp pg expose <ip>[/cidr]"
+    # Reject pure IPv4 = "" or anything weird. Allow optional /CIDR.
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] \
+        || die "Invalid IPv4 / CIDR: $ip  (IPv6 not yet supported)"
+    _pg_require_installed
+
+    local existing
+    existing="$(server_get POSTGRES_ALLOWED_IPS)"
+
+    if [[ ",${existing}," == *",${ip},"* ]]; then
+        log_info "$ip already exposed."
+        return 0
+    fi
+
+    local new_list
+    if [[ -z "$existing" ]]; then
+        new_list="$ip"
+    else
+        new_list="${existing},${ip}"
+    fi
+    server_set POSTGRES_ALLOWED_IPS "$new_list"
+
+    postgres_apply_pg_hba
+    if command -v ufw >/dev/null 2>&1; then
+        ufw allow from "$ip" to any port 5432 proto tcp comment "mwp pg: exposed $ip" >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+    fi
+
+    log_success "Postgres now reachable from $ip on port 5432."
+    log_warn "Remote clients send credentials over scram-sha-256 (hashed) but"
+    log_warn "query data is plaintext over TCP. Use SSL on the client side, or"
+    log_warn "run the connection through an SSH/Wireguard tunnel."
+}
+
+# ---------------------------------------------------------------------------
+# postgres_revoke_ip <ip>
+# ---------------------------------------------------------------------------
+postgres_revoke_ip() {
+    require_root
+    local ip="${1:-}"
+    [[ -z "$ip" ]] && die "Usage: mwp pg unexpose <ip>"
+    _pg_require_installed
+
+    local existing new_list=""
+    existing="$(server_get POSTGRES_ALLOWED_IPS)"
+    [[ -z "$existing" ]] && { log_info "No remote IPs are exposed."; return 0; }
+
+    local IFS=','
+    local x found=0
+    for x in $existing; do
+        if [[ "$x" == "$ip" ]]; then
+            found=1
+            continue
+        fi
+        [[ -z "$new_list" ]] && new_list="$x" || new_list="${new_list},${x}"
+    done
+
+    [[ $found -eq 0 ]] && { log_info "$ip was not in the exposed list."; return 0; }
+
+    server_set POSTGRES_ALLOWED_IPS "$new_list"
+    postgres_apply_pg_hba
+
+    if command -v ufw >/dev/null 2>&1; then
+        # ufw delete allow needs the rule to match exactly. Try several forms.
+        ufw delete allow from "$ip" to any port 5432 proto tcp >/dev/null 2>&1 || true
+        ufw reload >/dev/null 2>&1 || true
+    fi
+    log_success "Postgres no longer reachable from $ip."
+}
+
+# ---------------------------------------------------------------------------
+# postgres_list_exposed — show always-allowed CIDRs + explicit exposes
+# ---------------------------------------------------------------------------
+postgres_list_exposed() {
+    _pg_require_installed
+    printf '\n%b  PostgreSQL exposure%b\n' "$BOLD" "$NC"
+    printf '  %s\n' "──────────────────────────────────────────"
+    printf '  Always allowed (built-in):\n'
+    printf '    127.0.0.0/8              (localhost)\n'
+    printf '    172.16.0.0/12            (Docker bridge networks)\n'
+    printf '    ::1/128                  (IPv6 loopback)\n\n'
+
+    local existing
+    existing="$(server_get POSTGRES_ALLOWED_IPS)"
+    if [[ -n "$existing" ]]; then
+        printf '  Explicitly exposed remote IPs:\n'
+        local IFS=','
+        local x
+        for x in $existing; do
+            [[ -z "$x" ]] && continue
+            printf '    %s\n' "$x"
+        done
+    else
+        printf '  Remote: %bnone (use `mwp pg expose <ip>`)%b\n' "$DIM" "$NC"
+    fi
+    printf '\n  Add:    mwp pg expose <ip>[/cidr]\n'
+    printf '  Remove: mwp pg unexpose <ip>\n\n'
 }
 
 # ---------------------------------------------------------------------------
@@ -331,6 +452,9 @@ CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
     chmod 600 "$conf"
 
+    # If pgAdmin is also installed, refresh its server list silently
+    _pg_pgadmin_reload_if_installed
+
     local server_ip docker_ip
     server_ip="$(detect_ip)"
     docker_ip="$(ip -4 addr show docker0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
@@ -375,7 +499,18 @@ postgres_db_drop() {
     [[ -n "${user:-}" ]] && _pg_psql_quiet "DROP USER IF EXISTS \"${user}\";"
     rm -f "$conf"
 
+    _pg_pgadmin_reload_if_installed
     log_success "DB '$name' dropped."
+}
+
+# Internal helper — refresh pgAdmin's pre-registered server list whenever
+# the set of mwp-managed DBs changes. Silent noop if pgAdmin not installed.
+_pg_pgadmin_reload_if_installed() {
+    [[ -f /etc/mwp/pgadmin.conf ]] || return 0
+    [[ -f "$MWP_DIR/lib/multi-pgadmin.sh" ]] || return 0
+    # shellcheck source=/dev/null
+    source "$MWP_DIR/lib/multi-pgadmin.sh"
+    pgadmin_reload_servers >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------

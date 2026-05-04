@@ -17,6 +17,8 @@ PGADMIN_CONF="/etc/mwp/pgadmin.conf"
 PGADMIN_APP_NAME="pgadmin"
 PGADMIN_IMAGE="dpage/pgadmin4:latest"
 PGADMIN_DATA_DIR="/var/lib/mwp/apps/pgadmin/data"
+PGADMIN_SERVERS_JSON="${PGADMIN_DATA_DIR}/servers.json"
+PG_DBS_DIR="/etc/mwp/pg-dbs"
 
 _pgadmin_resolve_domain() {
     # Default: pgadmin.<panel-apex>. Caller can override.
@@ -29,6 +31,104 @@ _pgadmin_resolve_domain() {
 
 _pgadmin_is_installed() {
     [[ -f "$PGADMIN_CONF" ]]
+}
+
+# ---------------------------------------------------------------------------
+# pgadmin_render_servers_json
+# Generate /var/lib/mwp/apps/pgadmin/data/servers.json from
+# /etc/mwp/pg-dbs/*.conf so pgAdmin can pre-register all mwp-managed DBs.
+# Imported automatically on first container start (PGADMIN_SERVER_JSON_FILE).
+# To re-import after install: pgadmin_reload_servers.
+# ---------------------------------------------------------------------------
+pgadmin_render_servers_json() {
+    require_root
+    mkdir -p "$PGADMIN_DATA_DIR"
+
+    local entries="" n=0 conf
+    for conf in "$PG_DBS_DIR"/*.conf; do
+        [[ -f "$conf" ]] || continue
+        # Use a subshell so env vars from each conf don't leak between iterations
+        local entry
+        entry="$(
+            # shellcheck source=/dev/null
+            source "$conf"
+            cat <<EOF
+    "$((n + 1))": {
+      "Name": "${DB_NAME}",
+      "Group": "mwp",
+      "Host": "172.17.0.1",
+      "Port": 5432,
+      "MaintenanceDB": "${DB_NAME}",
+      "Username": "${DB_USER}",
+      "SSLMode": "prefer",
+      "Comment": "mwp-managed (created ${CREATED_AT})"
+    }
+EOF
+        )"
+        n=$((n + 1))
+        if [[ -z "$entries" ]]; then
+            entries="$entry"
+        else
+            entries="${entries},
+${entry}"
+        fi
+    done
+
+    if [[ $n -eq 0 ]]; then
+        cat > "$PGADMIN_SERVERS_JSON" <<JSON
+{
+  "Servers": {}
+}
+JSON
+    else
+        cat > "$PGADMIN_SERVERS_JSON" <<JSON
+{
+  "Servers": {
+${entries}
+  }
+}
+JSON
+    fi
+    chown 5050:5050 "$PGADMIN_SERVERS_JSON" 2>/dev/null || true
+    chmod 644 "$PGADMIN_SERVERS_JSON"
+}
+
+# ---------------------------------------------------------------------------
+# pgadmin_reload_servers — re-import servers.json into pgAdmin's user DB.
+# Called automatically after `mwp pg db create / drop` (silent).
+# pgAdmin only auto-imports on first run, so for incremental updates we run
+# setup.py inside the container with --replace.
+# ---------------------------------------------------------------------------
+pgadmin_reload_servers() {
+    require_root
+    _pgadmin_is_installed || return 0
+    # shellcheck source=/dev/null
+    source "$PGADMIN_CONF"
+
+    pgadmin_render_servers_json
+
+    if ! docker ps --format '{{.Names}}' | grep -q "^mwp-${PGADMIN_APP_NAME}\$"; then
+        log_sub "pgAdmin container not running — JSON regenerated, skipping import."
+        return 0
+    fi
+
+    # pgAdmin 8.x+: `setup.py load-servers <subcommand>`
+    # On older images the flag was --load-servers — we try both.
+    local out
+    if out="$(docker exec "mwp-${PGADMIN_APP_NAME}" \
+        python3 /pgadmin4/setup.py load-servers \
+        --user "$EMAIL" \
+        --replace /var/lib/pgadmin/servers.json 2>&1)"; then
+        log_sub "pgAdmin server list refreshed (${out##*[[:space:]]} entries)"
+    else
+        # Old syntax fallback
+        docker exec "mwp-${PGADMIN_APP_NAME}" \
+            python3 /pgadmin4/setup.py \
+            --load-servers /var/lib/pgadmin/servers.json \
+            --user "$EMAIL" --replace >/dev/null 2>&1 \
+            && log_sub "pgAdmin server list refreshed (legacy syntax)" \
+            || log_warn "pgAdmin server import failed — re-run: mwp pgadmin reload-servers"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -91,8 +191,12 @@ EOF
     # email/password login (matches user choice — built-in auth, not magic-link).
     # PGADMIN_DISABLE_POSTFIX=True so the image doesn't try to start a
     # mailer it doesn't need (saves ~30s startup).
+    # PGADMIN_SERVER_JSON_FILE → pre-register all mwp-managed postgres DBs.
     mkdir -p "$PGADMIN_DATA_DIR"
     chown 5050:5050 "$PGADMIN_DATA_DIR" 2>/dev/null || true
+
+    # Generate servers.json BEFORE first container start so pgAdmin auto-imports
+    pgadmin_render_servers_json
 
     if ! app_create "$PGADMIN_APP_NAME" \
         --domain "$pgadmin_domain" \
@@ -105,6 +209,7 @@ EOF
         --env "PGADMIN_CONFIG_SERVER_MODE=True" \
         --env "PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False" \
         --env "PGADMIN_DISABLE_POSTFIX=True" \
+        --env "PGADMIN_SERVER_JSON_FILE=/var/lib/pgadmin/servers.json" \
         --volume "${PGADMIN_DATA_DIR}:/var/lib/pgadmin"; then
         rm -f "$PGADMIN_CONF"
         die "app_create failed for pgAdmin — see output above"
