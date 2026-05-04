@@ -90,6 +90,12 @@ ${BOLD}PostgreSQL (opt-in — for Docker apps & external services):${NC}
   mwp pg db info <name>            Show DB credentials
   mwp pg psql                      psql shell as postgres superuser
 
+${BOLD}pgAdmin (opt-in — web UI for PostgreSQL via pgadmin.<panel-apex>):${NC}
+  mwp pgadmin install [domain]     Deploy pgAdmin Docker container + SSL
+  mwp pgadmin uninstall            Remove container + nginx + DATA
+  mwp pgadmin status               Show URL + login email + container state
+  mwp pgadmin url                  Print URL only
+
 ${BOLD}Cache:${NC}
   mwp cache purge  <domain>        Purge FastCGI + Redis cache for site
   mwp cache purge-all              Purge all sites
@@ -364,6 +370,22 @@ cmd_pg() {
             esac
             ;;
         *) cmd_help; die "Unknown pg subcommand: $sub" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# pgAdmin commands (opt-in — web UI for PostgreSQL)
+# ---------------------------------------------------------------------------
+cmd_pgadmin() {
+    local sub="${1:-status}"
+    shift || true
+    source "$MWP_DIR/lib/multi-pgadmin.sh"
+    case "$sub" in
+        install)     pgadmin_install "${1:-}" ;;
+        uninstall)   pgadmin_uninstall ;;
+        status|info) pgadmin_status ;;
+        url)         pgadmin_url ;;
+        *) cmd_help; die "Unknown pgadmin subcommand: $sub" ;;
     esac
 }
 
@@ -663,6 +685,7 @@ main() {
         cache)   cmd_cache "$@" ;;
         db)      cmd_db "$@" ;;
         pg)      cmd_pg "$@" ;;
+        pgadmin) cmd_pgadmin "$@" ;;
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
