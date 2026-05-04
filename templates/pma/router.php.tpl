@@ -24,11 +24,18 @@ define('MWP_PMA_ROUTED', true);
 $mwp_links_dir = '/etc/mwp/pma-links';
 if (!is_dir($mwp_links_dir)) return;
 
+// Force opcache to honor link-file changes immediately. Without this, the
+// 2-second revalidate window lets a second browser hit-and-claim a link
+// already claimed milliseconds earlier — single-use binding silently
+// degrades to "first 2 browsers in" instead of "first 1".
+$_mwp_opcache_on = function_exists('opcache_invalidate');
+
 $req_uri = $_SERVER['REQUEST_URI'] ?? '';
 $req_path = parse_url($req_uri, PHP_URL_PATH);
 if (!is_string($req_path) || $req_path === '') return;
 
 foreach (glob("$mwp_links_dir/*.php") as $link_file) {
+    if ($_mwp_opcache_on) @opcache_invalidate($link_file, true);
     $link = @include $link_file;
     if (!is_array($link) || empty($link['path'])) continue;
 
@@ -65,6 +72,9 @@ foreach (glob("$mwp_links_dir/*.php") as $link_file) {
         if (@file_put_contents($tmp, $payload, LOCK_EX) !== false) {
             @chmod($tmp, 0600);
             @rename($tmp, $link_file);
+            // Invalidate opcache for the new file so the next request reads
+            // the just-claimed token, not the stale empty one.
+            if ($_mwp_opcache_on) @opcache_invalidate($link_file, true);
         }
 
         setcookie($cookie_name, $token, [
