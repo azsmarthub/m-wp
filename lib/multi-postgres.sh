@@ -116,7 +116,9 @@ postgres_install() {
     require_root
 
     if _pg_is_installed; then
-        log_info "PostgreSQL already installed — refreshing tune only. To reinstall: mwp pg uninstall first."
+        log_info "PostgreSQL already installed — refreshing pg_hba + UFW + tune. To reinstall: mwp pg uninstall first."
+        postgres_apply_pg_hba
+        postgres_apply_firewall
         postgres_tune
         return 0
     fi
