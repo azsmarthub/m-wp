@@ -177,7 +177,9 @@ pgadmin_status() {
 
     local container_state="unknown"
     if command -v docker >/dev/null 2>&1; then
-        container_state="$(docker inspect -f '{{.State.Status}}' "mwp-app-${PGADMIN_APP_NAME}" 2>/dev/null || echo missing)"
+        # Container naming follows app_container_name() in lib/multi-app.sh:
+        # "mwp-<name>" — NOT "mwp-app-<name>".
+        container_state="$(docker inspect -f '{{.State.Status}}' "mwp-${PGADMIN_APP_NAME}" 2>/dev/null || echo missing)"
     fi
 
     local scheme="http"
