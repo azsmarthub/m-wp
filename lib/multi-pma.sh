@@ -191,7 +191,10 @@ pma_install() {
     chmod 644 "$PMA_ROUTER_CONF"
     log_sub "Router config installed: $PMA_ROUTER_CONF"
 
-    # 6. Empty nginx snippet (panel vhost includes it; must exist for nginx -t)
+    # 6. Empty nginx snippet (panel vhost includes it; must exist for nginx -t).
+    # Ensure /etc/nginx/snippets/ exists — Ubuntu's nginx package doesn't create
+    # it by default; only Debian's does.
+    mkdir -p "$(dirname "$PMA_NGINX_SNIPPET")"
     : > "$PMA_NGINX_SNIPPET"
     chmod 644 "$PMA_NGINX_SNIPPET"
 
