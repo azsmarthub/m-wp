@@ -673,17 +673,29 @@ main() {
     local start_time
     start_time="$(date +%s)"
 
-    run_step 1  11 "System preparation"     step_system_prep
-    run_step 2  11 "Installing Nginx"       step_nginx
-    run_step 3  11 "Installing PHP 8.5"     step_php
-    run_step 4  11 "Installing MariaDB"     step_mariadb
-    run_step 5  11 "Installing Redis"       step_redis
-    run_step 6  11 "Installing WP-CLI"      step_wpcli
-    run_step 7  11 "Installing Certbot"     step_certbot
-    run_step 8  11 "Firewall + Fail2ban"    step_firewall
-    run_step 9  11 "Auto security updates"  step_auto_security_updates
-    run_step 10 11 "Isolation hardening"    step_isolation
-    run_step 11 11 "Panel URL setup"        step_panel_url_apply
+    # Decide total step count up-front so progress reads "X/N" correctly.
+    # PostgreSQL is opt-in: set MWP_INSTALL_POSTGRES=1 to add it as step 12.
+    local total=11
+    [[ "${MWP_INSTALL_POSTGRES:-0}" == "1" ]] && total=12
+
+    run_step 1  $total "System preparation"     step_system_prep
+    run_step 2  $total "Installing Nginx"       step_nginx
+    run_step 3  $total "Installing PHP 8.5"     step_php
+    run_step 4  $total "Installing MariaDB"     step_mariadb
+    run_step 5  $total "Installing Redis"       step_redis
+    run_step 6  $total "Installing WP-CLI"      step_wpcli
+    run_step 7  $total "Installing Certbot"     step_certbot
+    run_step 8  $total "Firewall + Fail2ban"    step_firewall
+    run_step 9  $total "Auto security updates"  step_auto_security_updates
+    run_step 10 $total "Isolation hardening"    step_isolation
+    run_step 11 $total "Panel URL setup"        step_panel_url_apply
+
+    if [[ "${MWP_INSTALL_POSTGRES:-0}" == "1" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/multi-postgres.sh"
+        run_step 12 $total "Installing PostgreSQL" postgres_install
+    fi
+
     step_cli
 
     print_summary "$start_time"

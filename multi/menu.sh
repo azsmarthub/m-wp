@@ -69,7 +69,7 @@ ${BOLD}PHP:${NC}
   mwp php install <version>        Install PHP version (8.1/8.2/8.3/8.4/8.5)
   mwp php switch  <domain> <ver>   Switch site PHP version
 
-${BOLD}Database:${NC}
+${BOLD}Database — phpMyAdmin (MariaDB):${NC}
   mwp db pma install               Install phpMyAdmin (one-time, panel hostname)
   mwp db pma <domain> [ttl]        Generate single-use 24h magic-link (per-site)
   mwp db pma admin [ttl]           Generate ADMIN link — root sees ALL DBs (default 6h)
@@ -78,6 +78,17 @@ ${BOLD}Database:${NC}
   mwp db pma revoke-all            Revoke every active link (incl. admin)
   mwp db pma status                Show install state + link count
   mwp db pma uninstall             Remove phpMyAdmin completely
+
+${BOLD}PostgreSQL (opt-in — for Docker apps & external services):${NC}
+  mwp pg install                   Install PostgreSQL + tune (or env MWP_INSTALL_POSTGRES=1)
+  mwp pg uninstall                 Drop cluster + remove package
+  mwp pg status                    Version, conns, db count, total size
+  mwp pg tune                      Recalculate + apply tuning from current RAM/CPU
+  mwp pg db create <name> [user]   Create DB + user (auto-gen password)
+  mwp pg db drop <name>            Drop DB + its user
+  mwp pg db list                   List mwp-managed DBs
+  mwp pg db info <name>            Show DB credentials
+  mwp pg psql                      psql shell as postgres superuser
 
 ${BOLD}Cache:${NC}
   mwp cache purge  <domain>        Purge FastCGI + Redis cache for site
@@ -323,6 +334,36 @@ cmd_db() {
         "")          die "Usage: mwp db pma <install|status|list|admin|revoke|<domain>>" ;;
         # Default: treat as domain name → generate link
         *)           pma_create_link "$action" "${1:-}" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# PostgreSQL commands (opt-in — for Docker apps & external services)
+# ---------------------------------------------------------------------------
+cmd_pg() {
+    local sub="${1:-status}"
+    shift || true
+
+    source "$MWP_DIR/lib/multi-postgres.sh"
+
+    case "$sub" in
+        install)     postgres_install ;;
+        uninstall)   postgres_uninstall ;;
+        status|info) postgres_status ;;
+        tune)        postgres_tune ;;
+        psql|shell)  postgres_psql ;;
+        db)
+            local action="${1:-list}"
+            shift || true
+            case "$action" in
+                create)      postgres_db_create "${1:-}" "${2:-}" ;;
+                drop|delete) postgres_db_drop "${1:-}" ;;
+                list|ls)     postgres_db_list ;;
+                info)        postgres_db_info "${1:-}" ;;
+                *) die "Usage: mwp pg db <create|drop|list|info> [args]" ;;
+            esac
+            ;;
+        *) cmd_help; die "Unknown pg subcommand: $sub" ;;
     esac
 }
 
@@ -621,6 +662,7 @@ main() {
         php)     cmd_php "$@" ;;
         cache)   cmd_cache "$@" ;;
         db)      cmd_db "$@" ;;
+        pg)      cmd_pg "$@" ;;
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
