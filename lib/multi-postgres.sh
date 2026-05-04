@@ -140,11 +140,30 @@ postgres_install() {
     chmod 700 "$PG_DBS_DIR"
 
     postgres_apply_pg_hba
+    postgres_apply_firewall
     postgres_tune
 
     log_success "PostgreSQL ${pg_ver} installed."
     printf '\n  %bCreate an app DB:%b\n' "$BOLD" "$NC"
     printf '    mwp pg db create myapp\n\n'
+}
+
+# ---------------------------------------------------------------------------
+# postgres_apply_firewall — UFW rules for Docker bridge → 5432
+# Public 5432 stays blocked by UFW default deny.
+# ---------------------------------------------------------------------------
+postgres_apply_firewall() {
+    require_root
+    if ! command -v ufw >/dev/null 2>&1; then
+        log_sub "UFW not installed — skipping firewall rules"
+        return 0
+    fi
+    # Allow standard Docker bridge ranges to reach 5432. UFW will silently
+    # noop if the rule already exists.
+    ufw allow from 172.16.0.0/12 to any port 5432 proto tcp comment "mwp pg: docker bridge" >/dev/null 2>&1 || true
+    ufw allow from 127.0.0.0/8   to any port 5432 proto tcp comment "mwp pg: localhost" >/dev/null 2>&1 || true
+    ufw reload >/dev/null 2>&1 || true
+    log_sub "UFW: 5432 allowed from 172.16.0.0/12 + 127.0.0.0/8 (public still blocked)"
 }
 
 # ---------------------------------------------------------------------------
@@ -298,13 +317,15 @@ postgres_db_create() {
     # PG 15+: must grant CREATE on public schema explicitly
     _pg_psql_quiet "ALTER DATABASE \"${name}\" OWNER TO \"${user}\";"
 
+    # Quote CREATED_AT — value contains a space, so an unquoted assignment
+    # would crash any caller that `source`s the file (bash splits on space).
     cat > "$conf" <<EOF
 DB_NAME=${name}
 DB_USER=${user}
 DB_PASS=${password}
 HOST=localhost
 PORT=5432
-CREATED_AT=$(date '+%Y-%m-%d %H:%M:%S')
+CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
     chmod 600 "$conf"
 
