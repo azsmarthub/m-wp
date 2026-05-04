@@ -69,6 +69,15 @@ ${BOLD}PHP:${NC}
   mwp php install <version>        Install PHP version (8.1/8.2/8.3/8.4/8.5)
   mwp php switch  <domain> <ver>   Switch site PHP version
 
+${BOLD}Database:${NC}
+  mwp db pma install               Install phpMyAdmin (one-time, panel hostname)
+  mwp db pma <domain> [ttl]        Generate single-use 24h magic-link
+  mwp db pma list                  Show active links + status
+  mwp db pma revoke <domain>       Revoke all active links for one site
+  mwp db pma revoke-all            Revoke every active link
+  mwp db pma status                Show install state + link count
+  mwp db pma uninstall             Remove phpMyAdmin completely
+
 ${BOLD}Cache:${NC}
   mwp cache purge  <domain>        Purge FastCGI + Redis cache for site
   mwp cache purge-all              Purge all sites
@@ -281,6 +290,37 @@ cmd_php() {
         install) require_root; php_install_version "${1:-}" ;;
         switch)  require_root; php_switch_site "${1:-}" "${2:-}" ;;
         *) cmd_help; die "Unknown php subcommand: $sub" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Database commands (phpMyAdmin via panel hostname)
+# ---------------------------------------------------------------------------
+cmd_db() {
+    local sub="${1:-}"
+    shift || true
+
+    case "$sub" in
+        pma) ;;
+        ""|*) cmd_help; die "Usage: mwp db pma <install|uninstall|status|list|revoke|revoke-all|sweep|<domain>>" ;;
+    esac
+
+    local action="${1:-}"
+    shift || true
+
+    source "$MWP_DIR/lib/multi-pma.sh"
+
+    case "$action" in
+        install)     pma_install ;;
+        uninstall)   pma_uninstall ;;
+        status|info) pma_status ;;
+        list|ls)     pma_list ;;
+        revoke)      pma_revoke "${1:-}" ;;
+        revoke-all)  pma_revoke_all ;;
+        sweep)       pma_sweep_expired ;;
+        "")          die "Usage: mwp db pma <install|status|list|revoke|<domain>>" ;;
+        # Default: treat as domain name → generate link
+        *)           pma_create_link "$action" "${1:-}" ;;
     esac
 }
 
@@ -578,6 +618,7 @@ main() {
             ;;
         php)     cmd_php "$@" ;;
         cache)   cmd_cache "$@" ;;
+        db)      cmd_db "$@" ;;
         ssl)     cmd_ssl "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;

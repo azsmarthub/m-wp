@@ -333,6 +333,15 @@ SQL
     # 6. Cron jobs
     rm -f "/etc/cron.d/mwp-wpcron-${cron_slug}" 2>/dev/null || true
 
+    # 6b. Revoke any active phpMyAdmin magic links for this site
+    # Silent noop if pma not installed — link files would otherwise auto-login
+    # to a DB user that no longer exists.
+    if [[ -f "$MWP_DIR/lib/multi-pma.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MWP_DIR/lib/multi-pma.sh"
+        pma_revoke_silent "$domain" || true
+    fi
+
     # 7. Registry
     registry_remove "$domain"
 
