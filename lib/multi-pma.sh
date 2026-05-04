@@ -180,7 +180,14 @@ pma_install() {
     chmod 700 /var/lib/phpmyadmin/tmp
     log_sub "FPM pool installed: $pool_conf"
 
-    # 4. Link files dir — readable+writable by pma pool only
+    # 4. Link files dir — readable+writable by pma pool only.
+    # Also +x on /etc/mwp so the pma pool user (which is "other" relative to
+    # /etc/mwp's root:root ownership) can traverse INTO pma-links. Subdirs
+    # like /etc/mwp/sites stay 700 root, so server.conf + site creds remain
+    # unreadable to mwp-pma. 711 only exposes that /etc/mwp exists, not its
+    # contents. Without this, the router gets is_dir() = false and bails
+    # silently — single-use binding never fires.
+    chmod o+x "$MWP_STATE_DIR" 2>/dev/null || true
     mkdir -p "$PMA_LINKS_DIR"
     chown "$PMA_USER:$PMA_USER" "$PMA_LINKS_DIR"
     chmod 700 "$PMA_LINKS_DIR"
